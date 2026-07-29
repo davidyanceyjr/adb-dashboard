@@ -4,8 +4,8 @@
 - Mode: none
 - Goal: none
 - Roadmap slice: none
-- Branch or work context: Git repository on `main`; M1-S4 cycle work is
-  uncommitted in the working tree.
+- Branch or work context: Git repository on `main`; M1-S4 behavior commit is
+  `162e1e1d2ce49b373bf78b13f811a4f030e5ed66`.
 - Specification anchors: none
 - Acceptance criteria: none
 - Acceptance boundary: none
@@ -53,7 +53,8 @@ Evidence:
 - Review: REVIEW PASSED; scope remained limited to `M1-S4`; M1-S5 host/origin
   security and bootstrap token behavior remains out of scope; no test-only
   production hooks or placeholder success paths were added.
-- Version-control evidence: M1-S4 is not committed.
+- Version-control evidence: M1-S4 was committed as
+  `162e1e1d2ce49b373bf78b13f811a4f030e5ed66` and pushed to `origin/main`.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
@@ -66,8 +67,8 @@ Blocker: none
 ## Pause State
 
 - Current phase: inactive; next cycle not started.
-- Last valid result: `CYCLE-20260729-M1-S4` reached `CYCLE READY`; work is
-  uncommitted.
+- Last valid result: `CYCLE-20260729-M1-S4` reached `CYCLE READY` and was
+  committed as `162e1e1d2ce49b373bf78b13f811a4f030e5ed66`.
 - Changed files:
   - `.codex/plans/current.md`
   - `.codex/cycles/history.md`
@@ -93,9 +94,8 @@ Blocker: none
   - Race tests.
   - Vet.
 - Failing: none known for current working state.
-- Not run: commit, push, PR, release, deployment.
+- Not run: PR, release, deployment.
 - Blocker: none.
 - Next phase: discover `M1-S5` when an implementation cycle is requested.
 - Do not touch: no unrelated user-created files were present at handoff
-  inspection; preserve uncommitted M1-S4 changes unless explicitly committing
-  or revising this cycle.
+  inspection.
