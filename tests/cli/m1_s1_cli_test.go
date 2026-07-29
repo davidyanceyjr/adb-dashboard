@@ -1,13 +1,20 @@
 package cli_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -518,6 +525,181 @@ func TestM1S3StartupDirectoryFailuresExitBeforeServerSideEffects(t *testing.T) {
 	}
 }
 
+func TestM1S4ServerLifecycleStatusUnknownRouteAndBrowserOpen(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	dataDir := filepath.Join(values["HOME"], "data-dir")
+	tempDir := filepath.Join(values["HOME"], "temp-dir")
+
+	server := startDashboard(t, binary, env,
+		"serve",
+		"--listen", "127.0.0.1:0",
+		"--data-dir", dataDir,
+		"--temp-dir", tempDir,
+		"--read-only",
+		"--open",
+	)
+	defer server.cleanup(t)
+
+	startedLine := server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`))
+	addr := strings.TrimPrefix(startedLine[strings.LastIndex(startedLine, "addr="):], "addr=")
+	baseURL := "http://" + addr
+
+	assertDirExists(t, dataDir)
+	assertDirExists(t, tempDir)
+	assertPathAbsent(t, values["ADB_MARKER"])
+	waitFileContains(t, values["BROWSER_MARKER"], baseURL+"/\n")
+
+	statusCode, contentType, body := httpGet(t, baseURL+"/api/v1/status")
+	if statusCode != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", statusCode, body)
+	}
+	if !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("content type = %q, want application/json", contentType)
+	}
+	assertM1S4StatusJSON(t, body, addr, true)
+
+	statusCode, contentType, body = httpGet(t, baseURL+"/api/v1/unknown")
+	if statusCode != http.StatusNotFound {
+		t.Fatalf("unknown route status = %d, body = %s", statusCode, body)
+	}
+	if !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("unknown route content type = %q, want application/json", contentType)
+	}
+	assertJSONEqual(t, body, map[string]any{
+		"error": map[string]any{
+			"code":      "not_found",
+			"message":   "Unknown API route",
+			"details":   map[string]any{},
+			"requestId": nil,
+		},
+	})
+
+	server.signal(t, syscall.SIGTERM)
+	result := server.wait(t)
+	if result.code != 0 {
+		t.Fatalf("exit status = %d, want 0; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+	}
+	if result.stdout != "" {
+		t.Fatalf("stdout = %q, want empty", result.stdout)
+	}
+	if !regexp.MustCompile(`\S+ INFO server stopped signal=terminated`).MatchString(result.stderr) {
+		t.Fatalf("stderr missing shutdown diagnostic: %q", result.stderr)
+	}
+	assertNoFutureStateSideEffectsAllowBrowser(t, env)
+}
+
+func TestM1S4NoSubcommandStartsServer(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	dataDir := filepath.Join(values["HOME"], "data-dir")
+	tempDir := filepath.Join(values["HOME"], "temp-dir")
+
+	server := startDashboard(t, binary, env,
+		"--listen", "127.0.0.1:0",
+		"--data-dir", dataDir,
+		"--temp-dir", tempDir,
+		"--no-open",
+	)
+	defer server.cleanup(t)
+
+	startedLine := server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`))
+	addr := strings.TrimPrefix(startedLine[strings.LastIndex(startedLine, "addr="):], "addr=")
+	statusCode, _, body := httpGet(t, "http://"+addr+"/api/v1/status")
+	if statusCode != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", statusCode, body)
+	}
+
+	server.signal(t, syscall.SIGINT)
+	result := server.wait(t)
+	if result.code != 0 {
+		t.Fatalf("exit status = %d, want 0; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+	}
+	if result.stdout != "" {
+		t.Fatalf("stdout = %q, want empty", result.stdout)
+	}
+	if !regexp.MustCompile(`\S+ INFO server stopped signal=interrupt`).MatchString(result.stderr) {
+		t.Fatalf("stderr missing shutdown diagnostic: %q", result.stderr)
+	}
+}
+
+func TestM1S4ListenValidationAndUnavailableAddressFailures(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("non_loopback_host", func(t *testing.T) {
+		env := isolatedEnv(t)
+		result := runDashboard(t, binary, env, "serve", "--listen", "0.0.0.0:0")
+		if result.code != 2 {
+			t.Fatalf("exit status = %d, want 2; stderr = %q", result.code, result.stderr)
+		}
+		if result.stdout != "" {
+			t.Fatalf("stdout = %q, want empty", result.stdout)
+		}
+		want := "invalid configuration: server.listen must use a loopback host: 0.0.0.0\n"
+		if result.stderr != want {
+			t.Fatalf("stderr = %q, want %q", result.stderr, want)
+		}
+		assertNoForbiddenSideEffects(t, env)
+	})
+
+	t.Run("unavailable_loopback_address", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+
+		env := isolatedEnv(t)
+		result := runDashboard(t, binary, env, "serve", "--listen", listener.Addr().String())
+		if result.code != 4 {
+			t.Fatalf("exit status = %d, want 4; stderr = %q", result.code, result.stderr)
+		}
+		if result.stdout != "" {
+			t.Fatalf("stdout = %q, want empty", result.stdout)
+		}
+		wantPrefix := "listen address unavailable: " + listener.Addr().String() + ": "
+		if !strings.HasPrefix(result.stderr, wantPrefix) {
+			t.Fatalf("stderr = %q, want prefix %q", result.stderr, wantPrefix)
+		}
+		assertNoFutureStateOrExternalSideEffects(t, env)
+	})
+}
+
+func TestM1S4BrowserOpenFailureWarnsAndServerContinues(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	binDir := strings.Split(values["PATH"], string(os.PathListSeparator))[0]
+	if err := os.WriteFile(filepath.Join(binDir, "xdg-open"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$BROWSER_MARKER\"\nexit 9\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--open")
+	defer server.cleanup(t)
+
+	startedLine := server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`))
+	addr := strings.TrimPrefix(startedLine[strings.LastIndex(startedLine, "addr="):], "addr=")
+	warnLine := server.waitForStderrLine(t, regexp.MustCompile(`^\S+ WARN browser open failed url=http://127\.0\.0\.1:\d+/ error=`))
+	if !strings.Contains(warnLine, "exit status 9") {
+		t.Fatalf("warning line = %q, want exit status 9", warnLine)
+	}
+	statusCode, _, body := httpGet(t, "http://"+addr+"/api/v1/status")
+	if statusCode != http.StatusOK {
+		t.Fatalf("status code after browser warning = %d, body = %s", statusCode, body)
+	}
+
+	server.signal(t, syscall.SIGTERM)
+	result := server.wait(t)
+	if result.code != 0 {
+		t.Fatalf("exit status = %d, want 0; stderr = %q", result.code, result.stderr)
+	}
+	if result.stdout != "" {
+		t.Fatalf("stdout = %q, want empty", result.stdout)
+	}
+}
+
 func buildDashboard(t *testing.T) string {
 	t.Helper()
 
@@ -563,6 +745,140 @@ func runDashboard(t *testing.T, binary string, env []string, args ...string) com
 	return commandResult{stdout: stdout.String(), stderr: stderr.String(), code: code}
 }
 
+type runningDashboard struct {
+	cmd        *exec.Cmd
+	stdout     *bytes.Buffer
+	stderr     *bytes.Buffer
+	stderrLine chan string
+	done       chan error
+}
+
+func startDashboard(t *testing.T, binary string, env []string, args ...string) *runningDashboard {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Env = env
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start dashboard: %v", err)
+	}
+
+	server := &runningDashboard{
+		cmd:        cmd,
+		stdout:     &stdout,
+		stderr:     &stderr,
+		stderrLine: make(chan string, 32),
+		done:       make(chan error, 1),
+	}
+	go func() {
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stderr.WriteString(line)
+			stderr.WriteByte('\n')
+			server.stderrLine <- line
+		}
+	}()
+	go func() {
+		server.done <- cmd.Wait()
+	}()
+	return server
+}
+
+func (server *runningDashboard) waitForStderrLine(t *testing.T, pattern *regexp.Regexp) string {
+	t.Helper()
+
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case line := <-server.stderrLine:
+			if pattern.MatchString(line) {
+				return line
+			}
+		case err := <-server.done:
+			result := server.resultFromErr(err)
+			t.Fatalf("dashboard exited before stderr matched %s: exit=%d stdout=%q stderr=%q", pattern.String(), result.code, result.stdout, result.stderr)
+		case <-timeout:
+			t.Fatalf("timed out waiting for stderr matching %s; stderr so far: %q", pattern.String(), server.stderr.String())
+		}
+	}
+}
+
+func (server *runningDashboard) signal(t *testing.T, signal os.Signal) {
+	t.Helper()
+
+	if err := server.cmd.Process.Signal(signal); err != nil {
+		t.Fatalf("signal dashboard: %v", err)
+	}
+}
+
+func (server *runningDashboard) wait(t *testing.T) commandResult {
+	t.Helper()
+
+	select {
+	case err := <-server.done:
+		return server.resultFromErr(err)
+	case <-time.After(5 * time.Second):
+		_ = server.cmd.Process.Kill()
+		t.Fatal("timed out waiting for dashboard exit")
+		return commandResult{}
+	}
+}
+
+func (server *runningDashboard) cleanup(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-server.done:
+		return
+	default:
+		_ = server.cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-server.done:
+		case <-time.After(2 * time.Second):
+			_ = server.cmd.Process.Kill()
+		}
+	}
+}
+
+func (server *runningDashboard) resultFromErr(err error) commandResult {
+	code := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else {
+			code = -1
+		}
+	}
+	return commandResult{stdout: server.stdout.String(), stderr: server.stderr.String(), code: code}
+}
+
+func httpGet(t *testing.T, url string) (int, string, []byte) {
+	t.Helper()
+
+	client := http.Client{Timeout: 5 * time.Second}
+	response, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read %s response: %v", url, err)
+	}
+	return response.StatusCode, response.Header.Get("Content-Type"), body
+}
+
 func isolatedEnv(t *testing.T) []string {
 	t.Helper()
 
@@ -579,7 +895,7 @@ func isolatedEnv(t *testing.T) []string {
 	}
 	browserMarker := filepath.Join(root, "browser-opened")
 	browserPath := filepath.Join(binDir, "xdg-open")
-	if err := os.WriteFile(browserPath, []byte("#!/bin/sh\necho opened > "+browserMarker+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(browserPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$BROWSER_MARKER\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -643,6 +959,22 @@ func assertNoFutureStateOrExternalSideEffects(t *testing.T, env []string) {
 	}
 }
 
+func assertNoFutureStateSideEffectsAllowBrowser(t *testing.T, env []string) {
+	t.Helper()
+
+	values := envMap(env)
+	for _, path := range []string{
+		values["ADB_MARKER"],
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "cache"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "projects"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "uploads"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "history"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "jobs"),
+	} {
+		assertPathAbsent(t, path)
+	}
+}
+
 func assertDirExists(t *testing.T, path string) {
 	t.Helper()
 
@@ -653,6 +985,38 @@ func assertDirExists(t *testing.T, path string) {
 	if !info.IsDir() {
 		t.Fatalf("%s exists but is not a directory", path)
 	}
+}
+
+func assertFileContains(t *testing.T, path, want string) {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if string(content) != want {
+		t.Fatalf("%s = %q, want %q", path, string(content), want)
+	}
+}
+
+func waitFileContains(t *testing.T, path, want string) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		content, err := os.ReadFile(path)
+		if err == nil && string(content) == want {
+			return
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("content = %q", string(content))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s did not become %q: %v", path, want, lastErr)
 }
 
 func assertPathAbsent(t *testing.T, path string) {
@@ -666,6 +1030,131 @@ func assertPathAbsent(t *testing.T, path string) {
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("cannot inspect side effect path %s: %v", path, err)
 	}
+}
+
+func assertM1S4StatusJSON(t *testing.T, body []byte, bind string, readOnly bool) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal status JSON: %v\nbody: %s", err, body)
+	}
+	assertKeys(t, got, "application", "server", "adb", "watcher", "jobs", "sessions", "storage", "hostTools")
+	assertObject(t, got["application"], map[string]any{
+		"name":             "adb-dashboard",
+		"version":          nonEmptyString{},
+		"commit":           nonEmptyString{},
+		"buildDate":        nonEmptyString{},
+		"goVersion":        nonEmptyString{},
+		"frontendRevision": nonEmptyString{},
+	})
+	assertObject(t, got["server"], map[string]any{
+		"status":        "running",
+		"uptimeSeconds": nonNegativeNumber{},
+		"readOnly":      readOnly,
+		"bind":          bind,
+	})
+	assertObject(t, got["adb"], map[string]any{
+		"status":           "NIY",
+		"executable":       nil,
+		"version":          nil,
+		"serverResponsive": "NIY",
+	})
+	assertObject(t, got["watcher"], map[string]any{
+		"status":             "NIY",
+		"lastSuccessfulPoll": nil,
+	})
+	assertObject(t, got["jobs"], map[string]any{
+		"status":   "NIY",
+		"active":   float64(0),
+		"retained": float64(0),
+	})
+	assertObject(t, got["sessions"], map[string]any{
+		"status": "NIY",
+		"active": float64(0),
+	})
+	assertObject(t, got["storage"], map[string]any{
+		"status": "NIY",
+	})
+	assertObject(t, got["hostTools"], map[string]any{
+		"status":      "NIY",
+		"available":   float64(0),
+		"unavailable": float64(0),
+	})
+	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD", "/home/", "/tmp/"}
+	for _, text := range forbidden {
+		if strings.Contains(string(body), text) {
+			t.Fatalf("status JSON contains forbidden text %q: %s", text, body)
+		}
+	}
+}
+
+type nonEmptyString struct{}
+
+type nonNegativeNumber struct{}
+
+func assertJSONEqual(t *testing.T, body []byte, want map[string]any) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal JSON: %v\nbody: %s", err, body)
+	}
+	assertObject(t, got, want)
+}
+
+func assertObject(t *testing.T, got any, want map[string]any) {
+	t.Helper()
+
+	gotObject, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("value = %#v, want object", got)
+	}
+	keys := make([]string, 0, len(want))
+	for key := range want {
+		keys = append(keys, key)
+	}
+	assertKeys(t, gotObject, keys...)
+	for key, wantValue := range want {
+		gotValue := gotObject[key]
+		switch wantValue.(type) {
+		case nonEmptyString:
+			text, ok := gotValue.(string)
+			if !ok || text == "" {
+				t.Fatalf("%s = %#v, want non-empty string", key, gotValue)
+			}
+		case nonNegativeNumber:
+			number, ok := gotValue.(float64)
+			if !ok || number < 0 || number != float64(int64(number)) {
+				t.Fatalf("%s = %#v, want non-negative integer", key, gotValue)
+			}
+		default:
+			if fmt.Sprintf("%#v", gotValue) != fmt.Sprintf("%#v", wantValue) {
+				t.Fatalf("%s = %#v, want %#v", key, gotValue, wantValue)
+			}
+		}
+	}
+}
+
+func assertKeys(t *testing.T, got map[string]any, keys ...string) {
+	t.Helper()
+
+	if len(got) != len(keys) {
+		t.Fatalf("object keys = %v, want exactly %v", mapKeys(got), keys)
+	}
+	for _, key := range keys {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("object keys = %v, missing %s", mapKeys(got), key)
+		}
+	}
+}
+
+func mapKeys(values map[string]any) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func assertVersionOutput(t *testing.T, stdout string) {

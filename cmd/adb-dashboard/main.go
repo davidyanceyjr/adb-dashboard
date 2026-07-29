@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -160,13 +167,16 @@ func runStartup(args []string, stderr *os.File) int {
 		fmt.Fprintln(stderr, err.Error())
 		return 2
 	}
+	if err := validateLoopbackListen(cfg.listen.value); err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 2
+	}
 	if failure := ensureStartupDirs(cfg); failure != nil {
 		fmt.Fprintf(stderr, "server runtime failure: startup filesystem unavailable: %s directory %s: %s\n", failure.kind, failure.path, failure.err)
 		return 5
 	}
 
-	fmt.Fprintln(stderr, "NIY: server.start is not implemented yet")
-	return 6
+	return serveDashboard(cfg, stderr)
 }
 
 func parseOptions(args []string, stderr *os.File) (cliOptions, int) {
@@ -413,6 +423,21 @@ func validateListen(value string) error {
 	return nil
 }
 
+func validateLoopbackListen(value string) error {
+	host, _, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf("invalid configuration: server.listen must be HOST:PORT")
+	}
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("invalid configuration: server.listen must use a loopback host: %s", host)
+}
+
 func validateLogLevel(value string) error {
 	switch value {
 	case "error", "warn", "info", "debug", "trace":
@@ -592,4 +617,213 @@ func printVersion(stdout *os.File) {
 	fmt.Fprintf(stdout, "buildDate: %s\n", buildDate)
 	fmt.Fprintf(stdout, "goVersion: %s\n", runtime.Version())
 	fmt.Fprintf(stdout, "frontendRevision: %s\n", frontendRevision)
+}
+
+type statusResponse struct {
+	Application applicationStatus `json:"application"`
+	Server      serverStatus      `json:"server"`
+	ADB         adbStatus         `json:"adb"`
+	Watcher     watcherStatus     `json:"watcher"`
+	Jobs        jobsStatus        `json:"jobs"`
+	Sessions    sessionsStatus    `json:"sessions"`
+	Storage     storageStatus     `json:"storage"`
+	HostTools   hostToolsStatus   `json:"hostTools"`
+}
+
+type applicationStatus struct {
+	Name             string `json:"name"`
+	Version          string `json:"version"`
+	Commit           string `json:"commit"`
+	BuildDate        string `json:"buildDate"`
+	GoVersion        string `json:"goVersion"`
+	FrontendRevision string `json:"frontendRevision"`
+}
+
+type serverStatus struct {
+	Status        string `json:"status"`
+	UptimeSeconds int64  `json:"uptimeSeconds"`
+	ReadOnly      bool   `json:"readOnly"`
+	Bind          string `json:"bind"`
+}
+
+type adbStatus struct {
+	Status           string  `json:"status"`
+	Executable       *string `json:"executable"`
+	Version          *string `json:"version"`
+	ServerResponsive string  `json:"serverResponsive"`
+}
+
+type watcherStatus struct {
+	Status             string  `json:"status"`
+	LastSuccessfulPoll *string `json:"lastSuccessfulPoll"`
+}
+
+type jobsStatus struct {
+	Status   string `json:"status"`
+	Active   int    `json:"active"`
+	Retained int    `json:"retained"`
+}
+
+type sessionsStatus struct {
+	Status string `json:"status"`
+	Active int    `json:"active"`
+}
+
+type storageStatus struct {
+	Status string `json:"status"`
+}
+
+type hostToolsStatus struct {
+	Status      string `json:"status"`
+	Available   int    `json:"available"`
+	Unavailable int    `json:"unavailable"`
+}
+
+type errorEnvelope struct {
+	Error apiError `json:"error"`
+}
+
+type apiError struct {
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	Details   map[string]any `json:"details"`
+	RequestID *string        `json:"requestId"`
+}
+
+func serveDashboard(cfg config, stderr *os.File) int {
+	listener, err := net.Listen("tcp", cfg.listen.value)
+	if err != nil {
+		fmt.Fprintf(stderr, "listen address unavailable: %s: %s\n", cfg.listen.value, err)
+		return 4
+	}
+
+	startedAt := time.Now()
+	actualAddr := listener.Addr().String()
+	server := &http.Server{
+		Handler: dashboardHandler(startedAt, actualAddr, cfg.readOnly.value),
+	}
+
+	serverErr := make(chan error, 1)
+	go func() {
+		err := server.Serve(listener)
+		if err == http.ErrServerClosed {
+			err = nil
+		}
+		serverErr <- err
+	}()
+
+	fmt.Fprintf(stderr, "%s INFO server started addr=%s\n", logTimestamp(time.Now()), actualAddr)
+	if cfg.openBrowser.value {
+		openDashboardBrowser(stderr, "http://"+actualAddr+"/")
+	}
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	select {
+	case received := <-signals:
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(ctx)
+		if err := <-serverErr; err != nil {
+			fmt.Fprintf(stderr, "server runtime failure: shutdown failed: %s\n", err)
+			return 5
+		}
+		fmt.Fprintf(stderr, "%s INFO server stopped signal=%s\n", logTimestamp(time.Now()), received)
+		return 0
+	case err := <-serverErr:
+		if err != nil {
+			fmt.Fprintf(stderr, "server runtime failure: server stopped unexpectedly: %s\n", err)
+			return 5
+		}
+		return 0
+	}
+}
+
+func dashboardHandler(startedAt time.Time, bind string, readOnly bool) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/status", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			writeUnknownRoute(writer)
+			return
+		}
+		writeJSON(writer, http.StatusOK, statusResponse{
+			Application: applicationStatus{
+				Name:             "adb-dashboard",
+				Version:          version,
+				Commit:           commit,
+				BuildDate:        buildDate,
+				GoVersion:        runtime.Version(),
+				FrontendRevision: frontendRevision,
+			},
+			Server: serverStatus{
+				Status:        "running",
+				UptimeSeconds: int64(time.Since(startedAt).Seconds()),
+				ReadOnly:      readOnly,
+				Bind:          bind,
+			},
+			ADB: adbStatus{
+				Status:           "NIY",
+				Executable:       nil,
+				Version:          nil,
+				ServerResponsive: "NIY",
+			},
+			Watcher: watcherStatus{
+				Status:             "NIY",
+				LastSuccessfulPoll: nil,
+			},
+			Jobs: jobsStatus{
+				Status:   "NIY",
+				Active:   0,
+				Retained: 0,
+			},
+			Sessions: sessionsStatus{
+				Status: "NIY",
+				Active: 0,
+			},
+			Storage: storageStatus{
+				Status: "NIY",
+			},
+			HostTools: hostToolsStatus{
+				Status:      "NIY",
+				Available:   0,
+				Unavailable: 0,
+			},
+		})
+	})
+	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
+		writeUnknownRoute(writer)
+	})
+	return mux
+}
+
+func writeUnknownRoute(writer http.ResponseWriter) {
+	writeJSON(writer, http.StatusNotFound, errorEnvelope{
+		Error: apiError{
+			Code:      "not_found",
+			Message:   "Unknown API route",
+			Details:   map[string]any{},
+			RequestID: nil,
+		},
+	})
+}
+
+func writeJSON(writer http.ResponseWriter, status int, value any) {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(status)
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(value)
+}
+
+func openDashboardBrowser(stderr *os.File, url string) {
+	err := exec.Command("xdg-open", url).Run()
+	if err != nil {
+		fmt.Fprintf(stderr, "%s WARN browser open failed url=%s error=%s\n", logTimestamp(time.Now()), url, err)
+	}
+}
+
+func logTimestamp(at time.Time) string {
+	return at.Format("2006-01-02T15:04:05-07:00")
 }

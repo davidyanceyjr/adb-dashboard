@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.0.0
 - Current milestone: M1
-- Next eligible slice: M1-S4
+- Next eligible slice: M1-S5
 - Last reviewed: 2026-07-29
 
 This roadmap selects implementation order for the accepted local bootstrap
@@ -205,7 +205,7 @@ Every implementation slice must:
 
 ### Slice M1-S4: Loopback Server Lifecycle And Status API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Start the local dashboard server on loopback, expose current status,
   reject unavailable listen addresses, and shut down cleanly.
