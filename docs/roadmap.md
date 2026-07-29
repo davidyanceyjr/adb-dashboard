@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.0.0
 - Current milestone: M1
-- Next eligible slice: M1-S2
+- Next eligible slice: M1-S4
 - Last reviewed: 2026-07-29
 
 This roadmap selects implementation order for the accepted local bootstrap
@@ -88,7 +88,7 @@ Every implementation slice must:
 
 ### Slice M1-S2: Configuration Precedence And Successful Doctor Report
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Make current configuration resolution observable through `doctor`
   and successful startup-directory validation.
@@ -146,7 +146,7 @@ Every implementation slice must:
 
 ### Slice M1-S3: Configuration And Startup Filesystem Failure Behavior
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Fail closed for invalid configuration and unavailable startup
   directories before server startup or browser-open side effects.

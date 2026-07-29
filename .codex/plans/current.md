@@ -4,8 +4,10 @@
 - Mode: none
 - Goal: none
 - Roadmap slice: none
-- Branch or work context: Git repository on `main`; M1-S1 behavior commit is
-  `bae1abe108150bea75aecce76699de2f7aee8ef7`.
+- Branch or work context: Git repository on
+  `agent/m1-s2-doctor-config`, tracking
+  `origin/agent/m1-s2-doctor-config`; M1-S3 behavior commit is
+  `c98eb6e2d7223c54c33d6fa9278919d5e054e7c3`.
 - Specification anchors: none
 - Acceptance criteria: none
 - Acceptance boundary: none
@@ -16,26 +18,78 @@
 - Broad verification commands: none
 - Current phase: inactive
 - Blocker: none
-- Next phase: discover `M1-S2` when an implementation cycle is requested.
+- Next phase: discover `M1-S4` when an implementation cycle is requested.
 
 ## Last Closed Cycle
 
-Phase: committed
-Result: committed
+Phase: ready
+Result: CYCLE READY
 Evidence:
-- `git commit -m "feat: add cli discovery and version output"` exited `0` and
-  created commit `bae1abe108150bea75aecce76699de2f7aee8ef7`.
-- `CYCLE-20260729-M1-S1` reached `CYCLE READY` before commit.
-- Focused evidence before commit:
-  `GOCACHE=$PWD/.codex/cache/go-build GOMODCACHE=$PWD/.codex/cache/go-mod go test -count=1 ./...`
+- Cycle `CYCLE-20260729-M1-S3` implemented configuration and startup
+  filesystem failure behavior for `doctor`, `serve`, and no-subcommand
+  startup.
+- Focused red evidence:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+  exited `1`; failures reached the real CLI boundary because invalid
+  listen/log values exited `0` with PASS doctor reports, wrong TOML type
+  emitted a parse diagnostic instead of `ERR-004-008`, and startup filesystem
+  failures returned `NIY: server.start is not implemented yet`.
+- Focused green evidence:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
   exited `0`.
-- Broad evidence before commit:
-  `GOCACHE=$PWD/.codex/cache/go-build GOMODCACHE=$PWD/.codex/cache/go-mod go test -race ./...`
-  exited `0`; `GOCACHE=$PWD/.codex/cache/go-build GOMODCACHE=$PWD/.codex/cache/go-mod go vet ./...`
+- Real-path evidence: built the real command to an isolated temporary path;
+  malformed explicit config with `doctor --config` exited `2`, wrote no stdout,
+  and wrote `invalid configuration: cannot parse ...` to stderr; `serve
+  --data-dir "$root/data-dir" --temp-dir "$root/temp-file" --open` exited `5`,
+  wrote no stdout, wrote `server runtime failure: startup filesystem
+  unavailable: temp directory ...` to stderr, left the earlier data directory in
+  place, and did not invoke fake `adb` or fake `xdg-open` markers.
+- Broad evidence:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
+  exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
   exited `0`.
+- Documentation evidence: `docs/roadmap.md` marks `M1-S3` as `verified` and
+  sets next eligible slice to `M1-S4`; `.codex/cycles/history.md` has a
+  compact row for `CYCLE-20260729-M1-S3`.
+- Review: REVIEW PASSED; scope remained limited to `M1-S3`, the production
+  path still reports `NIY` for successful server startup, and no test-only
+  production hooks or placeholder success paths were added.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
+- `cmd/adb-dashboard/main.go`
 - `docs/roadmap.md`
-Next: `M1-S2`
+- `tests/cli/m1_s1_cli_test.go`
+Next: `M1-S4`
 Blocker: none
+
+## Pause State
+
+- Current phase: inactive; next cycle not started.
+- Last valid result: `CYCLE-20260729-M1-S3` reached `CYCLE READY` and was
+  committed as `c98eb6e2d7223c54c33d6fa9278919d5e054e7c3`.
+- Changed files:
+  - `.codex/plans/current.md`
+  - `.codex/cycles/history.md`
+  - `cmd/adb-dashboard/main.go`
+  - `docs/roadmap.md`
+  - `tests/cli/m1_s1_cli_test.go`
+- Commands run:
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+    exited `1` for red evidence, then exited `0` after implementation.
+  - Real-path shell exercise built `./cmd/adb-dashboard` to a temporary path and
+    ran malformed-config `doctor` plus temp-file failure `serve`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
+    exited `0`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+    exited `0`.
+- Passing:
+  - Focused process tests.
+  - Real-path malformed config and startup filesystem failure exercise.
+  - Race tests.
+  - Vet.
+- Failing: none known for current working state.
+- Not run: push, PR, and release were not run.
+- Blocker: none.
+- Next phase: discover `M1-S4` when an implementation cycle is requested.
+- Do not touch: no unrelated user-created files were present at cycle closure.
