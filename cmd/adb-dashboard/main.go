@@ -758,6 +758,13 @@ func serveDashboard(cfg config, stderr *os.File) int {
 
 func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bootstrapResponse) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/" || request.Method != http.MethodGet {
+			http.NotFound(writer, request)
+			return
+		}
+		writeHTML(writer, dashboardShellHTML)
+	})
 	mux.HandleFunc("/api/v1/bootstrap", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
 			writeUnknownRoute(writer)
@@ -929,6 +936,12 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_ = encoder.Encode(value)
 }
 
+func writeHTML(writer http.ResponseWriter, body string) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte(body))
+}
+
 func openDashboardBrowser(stderr *os.File, url string) {
 	err := exec.Command("xdg-open", url).Run()
 	if err != nil {
@@ -939,3 +952,121 @@ func openDashboardBrowser(stderr *os.File, url string) {
 func logTimestamp(at time.Time) string {
 	return at.Format("2006-01-02T15:04:05-07:00")
 }
+
+const dashboardShellHTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>adb-dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f7fb;
+      color: #172033;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+    }
+    main {
+      box-sizing: border-box;
+      width: min(960px, 100%);
+      margin: 0 auto;
+      padding: 32px 20px;
+    }
+    h1 {
+      margin: 0 0 20px;
+      font-size: 2rem;
+      font-weight: 700;
+    }
+    dl {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 12px 18px;
+      margin: 0;
+      padding: 20px 0;
+      border-top: 1px solid #cfd7e6;
+      border-bottom: 1px solid #cfd7e6;
+    }
+    dt {
+      font-weight: 700;
+      color: #43516b;
+    }
+    dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="application-name">adb-dashboard</h1>
+    <dl aria-label="Current dashboard status">
+      <dt>server</dt><dd id="server-status">server: unavailable</dd>
+      <dt>bind</dt><dd id="server-bind">bind: unavailable</dd>
+      <dt>read-only</dt><dd id="server-read-only">read-only: unavailable</dd>
+      <dt>adb</dt><dd id="adb-status">adb: unavailable</dd>
+      <dt>watcher</dt><dd id="watcher-status">watcher: unavailable</dd>
+      <dt>jobs</dt><dd id="jobs-status">jobs: unavailable</dd>
+      <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
+      <dt>storage</dt><dd id="storage-status">storage: unavailable</dd>
+      <dt>host tools</dt><dd id="host-tools-status">host tools: unavailable</dd>
+    </dl>
+  </main>
+  <script>
+(() => {
+  const setText = (id, text) => {
+    const target = document.getElementById(id);
+    if (target) {
+      target.textContent = text;
+    }
+  };
+
+  const unavailable = () => {
+    setText("server-status", "server: unavailable");
+    setText("server-bind", "bind: unavailable");
+    setText("server-read-only", "read-only: unavailable");
+    setText("adb-status", "adb: unavailable");
+    setText("watcher-status", "watcher: unavailable");
+    setText("jobs-status", "jobs: unavailable");
+    setText("sessions-status", "sessions: unavailable");
+    setText("storage-status", "storage: unavailable");
+    setText("host-tools-status", "host tools: unavailable");
+  };
+
+  const loadStatus = async () => {
+    try {
+      const bootstrapResponse = await fetch("/api/v1/bootstrap", { credentials: "same-origin" });
+      if (!bootstrapResponse.ok) {
+        throw new Error("bootstrap unavailable");
+      }
+      const bootstrap = await bootstrapResponse.json();
+      const statusResponse = await fetch(bootstrap.statusUrl, { credentials: "same-origin" });
+      if (!statusResponse.ok) {
+        throw new Error("status unavailable");
+      }
+      const status = await statusResponse.json();
+      setText("application-name", status.application.name);
+      setText("server-status", "server: " + status.server.status);
+      setText("server-bind", "bind: " + status.server.bind);
+      setText("server-read-only", "read-only: " + String(status.server.readOnly));
+      setText("adb-status", "adb: " + status.adb.status);
+      setText("watcher-status", "watcher: " + status.watcher.status);
+      setText("jobs-status", "jobs: " + status.jobs.status);
+      setText("sessions-status", "sessions: " + status.sessions.status);
+      setText("storage-status", "storage: " + status.storage.status);
+      setText("host-tools-status", "host tools: " + status.hostTools.status);
+    } catch (_) {
+      unavailable();
+    }
+  };
+
+  document.addEventListener("DOMContentLoaded", loadStatus);
+})();
+  </script>
+</body>
+</html>
+`

@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.0.0
 - Current milestone: M1
-- Next eligible slice: M1-S6
+- Next eligible slice: none for accepted M1 roadmap
 - Last reviewed: 2026-07-29
 
 This roadmap selects implementation order for the accepted local bootstrap
@@ -325,7 +325,7 @@ Every implementation slice must:
 
 ### Slice M1-S6: Embedded Browser Shell
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Serve the current browser dashboard shell and render backend-derived
   status without exposing controls for out-of-scope workflows.

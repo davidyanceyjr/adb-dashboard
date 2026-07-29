@@ -800,6 +800,92 @@ func TestM1S5BootstrapTokensAndSecurityPolicy(t *testing.T) {
 	}
 }
 
+func TestM1S6EmbeddedBrowserShellRendersBackendState(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+
+	server := startDashboard(t, binary, env,
+		"serve",
+		"--listen", "127.0.0.1:0",
+		"--read-only",
+		"--no-open",
+	)
+	defer server.cleanup(t)
+
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+
+	statusCode, contentType, body := httpGet(t, baseURL+"/")
+	if statusCode != http.StatusOK {
+		t.Fatalf("root status = %d, body = %s", statusCode, body)
+	}
+	if !strings.HasPrefix(contentType, "text/html") {
+		t.Fatalf("root content type = %q, want text/html", contentType)
+	}
+
+	html := string(body)
+	for _, forbidden := range []string{
+		"csrfToken",
+		"webSocketToken",
+		"<button",
+		"<form",
+		"href=",
+		"devices",
+		"raw command",
+		"logcat",
+		"transfers",
+		"artifacts",
+		"reboot",
+		"install",
+	} {
+		if strings.Contains(strings.ToLower(html), strings.ToLower(forbidden)) {
+			t.Fatalf("root shell contains forbidden text %q:\n%s", forbidden, html)
+		}
+	}
+
+	script := extractInlineScript(t, html)
+	rendered := runFrontendScript(t, script, baseURL, false)
+	for _, want := range []string{
+		"adb-dashboard",
+		"server: running",
+		"bind: " + addr,
+		"read-only: true",
+		"adb: NIY",
+		"watcher: NIY",
+		"jobs: NIY",
+		"sessions: NIY",
+		"storage: NIY",
+		"host tools: NIY",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+		}
+	}
+	for _, forbidden := range []string{"csrfToken", "webSocketToken"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("rendered shell disclosed %q:\n%s", forbidden, rendered)
+		}
+	}
+
+	unavailable := runFrontendScript(t, script, baseURL, true)
+	if !strings.Contains(unavailable, "server: unavailable") {
+		t.Fatalf("failure render missing server unavailable state:\n%s", unavailable)
+	}
+	for _, forbidden := range []string{
+		"server: running",
+		"adb: running",
+		"watcher: running",
+		"jobs: running",
+		"sessions: running",
+		"storage: running",
+		"host tools: running",
+	} {
+		if strings.Contains(unavailable, forbidden) {
+			t.Fatalf("failure render contains success state %q:\n%s", forbidden, unavailable)
+		}
+	}
+}
+
 func buildDashboard(t *testing.T) string {
 	t.Helper()
 
@@ -843,6 +929,83 @@ func runDashboard(t *testing.T, binary string, env []string, args ...string) com
 	}
 
 	return commandResult{stdout: stdout.String(), stderr: stderr.String(), code: code}
+}
+
+func extractInlineScript(t *testing.T, html string) string {
+	t.Helper()
+
+	startMarker := "<script>"
+	endMarker := "</script>"
+	start := strings.Index(html, startMarker)
+	end := strings.LastIndex(html, endMarker)
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("root shell did not contain an inline script:\n%s", html)
+	}
+	return html[start+len(startMarker) : end]
+}
+
+func runFrontendScript(t *testing.T, script, baseURL string, failStatus bool) string {
+	t.Helper()
+
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required for deterministic browser-shell script execution: %v", err)
+	}
+
+	harness := fmt.Sprintf(`
+const baseURL = %q;
+const failStatus = %t;
+const elements = {};
+function element(id) {
+  if (!elements[id]) {
+    elements[id] = { textContent: "" };
+  }
+  return elements[id];
+}
+global.window = {};
+global.document = {
+  getElementById: element,
+  addEventListener: (event, callback) => {
+    if (event === "DOMContentLoaded") {
+      Promise.resolve().then(callback);
+    }
+  },
+};
+const realFetch = global.fetch;
+global.fetch = async (target, options = {}) => {
+  const url = new URL(target, baseURL);
+  if (failStatus && url.pathname === "/api/v1/status") {
+    return { ok: false, status: 503, json: async () => ({}) };
+  }
+  return realFetch(url.href, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Origin: baseURL,
+    },
+  });
+};
+%s
+setTimeout(() => {
+  for (const key of Object.keys(elements).sort()) {
+    console.log(key + "=" + elements[key].textContent);
+  }
+}, 200);
+`, baseURL, failStatus, script)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, nodePath, "-e", harness)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run frontend script: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("frontend script timed out\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	}
+	return stdout.String()
 }
 
 type runningDashboard struct {
