@@ -35,7 +35,7 @@ Every implementation slice must:
 
 ### Slice M1-S1: CLI Discovery And Version Output
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Deliver the first usable process boundary for command discovery and
   build metadata without starting the server.

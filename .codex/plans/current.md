@@ -188,5 +188,5 @@ Changed:
 - `cmd/adb-dashboard/main.go`
 - `docs/roadmap.md`
 - `tests/cli/m1_s1_cli_test.go`
-Next: commit when authorized; otherwise no next accepted M1 slice.
+Next: no next accepted M1 slice.
 Blocker: none
