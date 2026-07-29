@@ -6,8 +6,8 @@
 - Roadmap slice: none
 - Branch or work context: Git repository on
   `agent/m1-s2-doctor-config`, tracking
-  `origin/agent/m1-s2-doctor-config`; M1-S3 changes are verified in the
-  working tree but not committed.
+  `origin/agent/m1-s2-doctor-config`; M1-S3 behavior commit is
+  `c98eb6e2d7223c54c33d6fa9278919d5e054e7c3`.
 - Specification anchors: none
 - Acceptance criteria: none
 - Acceptance boundary: none
@@ -45,7 +45,7 @@ Evidence:
   unavailable: temp directory ...` to stderr, left the earlier data directory in
   place, and did not invoke fake `adb` or fake `xdg-open` markers.
 - Broad evidence:
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race ./...`
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
   exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
   exited `0`.
 - Documentation evidence: `docs/roadmap.md` marks `M1-S3` as `verified` and
@@ -66,8 +66,8 @@ Blocker: none
 ## Pause State
 
 - Current phase: inactive; next cycle not started.
-- Last valid result: `CYCLE-20260729-M1-S3` reached `CYCLE READY` in the
-  working tree and has not been committed.
+- Last valid result: `CYCLE-20260729-M1-S3` reached `CYCLE READY` and was
+  committed as `c98eb6e2d7223c54c33d6fa9278919d5e054e7c3`.
 - Changed files:
   - `.codex/plans/current.md`
   - `.codex/cycles/history.md`
@@ -79,7 +79,7 @@ Blocker: none
     exited `1` for red evidence, then exited `0` after implementation.
   - Real-path shell exercise built `./cmd/adb-dashboard` to a temporary path and
     ran malformed-config `doctor` plus temp-file failure `serve`.
-  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race ./...`
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
     exited `0`.
   - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
     exited `0`.
@@ -89,8 +89,7 @@ Blocker: none
   - Race tests.
   - Vet.
 - Failing: none known for current working state.
-- Not run: commit, push, PR, and release were not run.
+- Not run: push, PR, and release were not run.
 - Blocker: none.
-- Next phase: commit or hand off `M1-S3`, or discover `M1-S4` after the
-  current changes are committed or intentionally left for review.
+- Next phase: discover `M1-S4` when an implementation cycle is requested.
 - Do not touch: no unrelated user-created files were present at cycle closure.
