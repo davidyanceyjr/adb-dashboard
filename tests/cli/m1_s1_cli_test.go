@@ -103,6 +103,122 @@ func TestM1S1InvalidInvocationsFailBeforeStartup(t *testing.T) {
 	}
 }
 
+func TestM1S2DoctorDefaultsCreateOnlyCurrentStartupDirectories(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+
+	result := runDashboard(t, binary, env, "doctor")
+
+	if result.code != 0 {
+		t.Fatalf("exit status = %d, want 0; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("stderr = %q, want empty", result.stderr)
+	}
+
+	dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+	tempDir := filepath.Join(values["XDG_RUNTIME_DIR"], "adb-dashboard")
+	want := strings.Join([]string{
+		"adb-dashboard doctor",
+		"overall: PASS",
+		"config: PASS source=defaults listen=127.0.0.1:8080 readOnly=false logLevel=info",
+		"dataDir: PASS path=" + dataDir,
+		"tempDir: PASS path=" + tempDir,
+		"cacheDir: NIY storage.cache is not implemented yet",
+		"projectDir: NIY storage.projects is not implemented yet",
+		"adbExecutable: NIY adb.discovery is not implemented yet",
+		"adbVersion: NIY adb.discovery is not implemented yet",
+		"adbServer: NIY adb.server is not implemented yet",
+		"devices: NIY devices.refresh is not implemented yet",
+		"hostTools: NIY hosttools.discovery is not implemented yet",
+		"",
+	}, "\n")
+	if result.stdout != want {
+		t.Fatalf("doctor stdout mismatch\nwant:\n%s\ngot:\n%s", want, result.stdout)
+	}
+	assertDirExists(t, dataDir)
+	assertDirExists(t, tempDir)
+	assertNoFutureStateOrExternalSideEffects(t, env)
+}
+
+func TestM1S2DoctorReportsHighestPrioritySuccessfulConfiguration(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+
+	userConfig := filepath.Join(values["XDG_CONFIG_HOME"], "adb-dashboard", "config.toml")
+	envConfig := filepath.Join(values["HOME"], "env-config.toml")
+	cliConfig := filepath.Join(values["HOME"], "cli-config.toml")
+	writeFile(t, userConfig, `[server]
+listen = "127.0.0.1:1111"
+read_only = false
+data_dir = "user-data"
+temp_dir = "user-temp"
+
+[logging]
+level = "error"
+`)
+	writeFile(t, envConfig, `[server]
+listen = "127.0.0.1:2222"
+read_only = false
+data_dir = "env-file-data"
+temp_dir = "env-file-temp"
+
+[logging]
+level = "warn"
+`)
+	writeFile(t, cliConfig, `[server]
+listen = "127.0.0.1:3333"
+read_only = false
+data_dir = "cli-file-data"
+temp_dir = "cli-file-temp"
+
+[logging]
+level = "trace"
+`)
+
+	envDataDir := filepath.Join(values["HOME"], "env-data")
+	cliTempDir := filepath.Join(values["HOME"], "cli-temp")
+	env = setEnv(env, "ADB_DASHBOARD_CONFIG", envConfig)
+	env = setEnv(env, "ADB_DASHBOARD_DATA_DIR", envDataDir)
+	env = setEnv(env, "ADB_DASHBOARD_LISTEN", "127.0.0.1:4444")
+
+	result := runDashboard(t, binary, env,
+		"doctor",
+		"--config", cliConfig,
+		"--listen", "127.0.0.1:5555",
+		"--temp-dir", cliTempDir,
+		"--read-only",
+	)
+
+	if result.code != 0 {
+		t.Fatalf("exit status = %d, want 0; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("stderr = %q, want empty", result.stderr)
+	}
+	wantContains := []string{
+		"config: PASS source=mixed listen=127.0.0.1:5555 readOnly=true logLevel=trace",
+		"dataDir: PASS path=" + envDataDir,
+		"tempDir: PASS path=" + cliTempDir,
+		"cacheDir: NIY storage.cache is not implemented yet",
+		"hostTools: NIY hosttools.discovery is not implemented yet",
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("doctor stdout missing %q\nstdout:\n%s", want, result.stdout)
+		}
+	}
+	assertDirExists(t, envDataDir)
+	assertDirExists(t, cliTempDir)
+	assertPathAbsent(t, filepath.Join(values["HOME"], "cli-file-data"))
+	assertPathAbsent(t, filepath.Join(values["HOME"], "env-file-temp"))
+	assertPathAbsent(t, filepath.Join(values["HOME"], "user-data"))
+	assertPathAbsent(t, filepath.Join(values["HOME"], "user-temp"))
+	assertNoFutureStateOrExternalSideEffects(t, env)
+}
+
 func buildDashboard(t *testing.T) string {
 	t.Helper()
 
@@ -162,6 +278,11 @@ func isolatedEnv(t *testing.T) []string {
 	if err := os.WriteFile(adbPath, []byte("#!/bin/sh\necho invoked > "+adbMarker+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	browserMarker := filepath.Join(root, "browser-opened")
+	browserPath := filepath.Join(binDir, "xdg-open")
+	if err := os.WriteFile(browserPath, []byte("#!/bin/sh\necho opened > "+browserMarker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	gocache := filepath.Join(root, "gocache")
 	gomodcache := filepath.Join(root, "gomodcache")
@@ -182,6 +303,7 @@ func isolatedEnv(t *testing.T) []string {
 		"GOCACHE=" + gocache,
 		"GOMODCACHE=" + gomodcache,
 		"ADB_MARKER=" + adbMarker,
+		"BROWSER_MARKER=" + browserMarker,
 	}
 	return append(env, "PWD="+mustGetwd(t))
 }
@@ -195,12 +317,55 @@ func assertNoForbiddenSideEffects(t *testing.T, env []string) {
 		filepath.Join(values["XDG_RUNTIME_DIR"], "adb-dashboard"),
 		filepath.Join(values["TMPDIR"], "adb-dashboard-"+os.Getenv("UID")),
 		values["ADB_MARKER"],
+		values["BROWSER_MARKER"],
 	} {
 		if _, err := os.Stat(path); err == nil {
 			t.Fatalf("forbidden side effect exists: %s", path)
 		} else if !os.IsNotExist(err) {
 			t.Fatalf("cannot inspect side effect path %s: %v", path, err)
 		}
+	}
+}
+
+func assertNoFutureStateOrExternalSideEffects(t *testing.T, env []string) {
+	t.Helper()
+
+	values := envMap(env)
+	for _, path := range []string{
+		values["ADB_MARKER"],
+		values["BROWSER_MARKER"],
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "cache"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "projects"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "uploads"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "history"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "jobs"),
+	} {
+		assertPathAbsent(t, path)
+	}
+}
+
+func assertDirExists(t *testing.T, path string) {
+	t.Helper()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s exists but is not a directory", path)
+	}
+}
+
+func assertPathAbsent(t *testing.T, path string) {
+	t.Helper()
+
+	if path == "" {
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("forbidden side effect exists: %s", path)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("cannot inspect side effect path %s: %v", path, err)
 	}
 }
 
@@ -222,6 +387,28 @@ func assertVersionOutput(t *testing.T, stdout string) {
 		if !pattern.MatchString(lines[i]) {
 			t.Fatalf("version line %d = %q, does not match %s", i+1, lines[i], pattern.String())
 		}
+	}
+}
+
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	next := env[:0]
+	for _, item := range env {
+		if !strings.HasPrefix(item, prefix) {
+			next = append(next, item)
+		}
+	}
+	return append(next, prefix+value)
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
