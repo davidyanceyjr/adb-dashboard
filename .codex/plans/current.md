@@ -4,10 +4,11 @@
 - Mode: documentation
 - Goal: Create the next accepted roadmap stage for read-only ADB discovery.
 - Roadmap slice: documentation-only specification and roadmap update
-- Branch or work context: Git repository on `main` at
+- Branch or work context: Git repository on branch `agent/add-m2-adb-roadmap`,
+  created from `main` at
   `c51444d3322d0e0fbfa898282bbc1589d3ef22a8`; working tree edits are limited
-  to documentation-cycle state, cycle history, `docs/SPECIFICATION.md`, and
-  `docs/roadmap.md`.
+  to commit bookkeeping after documentation commit
+  `108d6b44b7f185756799d69397a0b81bfc3ca39c`.
 - Specification anchors: `CAP-010`, `CAP-011`, `CAP-012`, `AC-010-001`
   through `AC-010-005`, `AC-011-001` through `AC-011-005`, `AC-012-001`
   through `AC-012-004`, `INV-DATA-003`
@@ -27,9 +28,10 @@
 - Real-path command or procedure: `not applicable; documentation-only cycle`
 - Broad verification commands: `git diff --check`; stale-contract search with
   `rg`
-- Current phase: ready
+- Current phase: committed
 - Blocker: none
-- Next phase: commit when authorized, or run `M2-S1`.
+- Next phase: open draft PR, or run `M2-S1` after the roadmap is accepted on
+  the target branch.
 
 ## Phase Results
 
@@ -86,17 +88,21 @@ Evidence:
   no production code, tests, generated artifacts, dependencies, or commits.
 Changed:
 - `.codex/plans/current.md`
-Next: ready
+Next: committed
 Blocker: none
 
-Phase: ready
-Result: CYCLE READY
+Phase: committed
+Result: COMMITTED
 Evidence:
 - `CYCLE-20260729-M2-ROADMAP` reached `REVIEW PASSED`.
+- `git commit -m "docs: add m2 adb discovery roadmap"` created commit
+  `108d6b44b7f185756799d69397a0b81bfc3ca39c`.
+- `git push -u origin agent/add-m2-adb-roadmap` pushed the branch and set
+  upstream tracking.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
 - `docs/SPECIFICATION.md`
 - `docs/roadmap.md`
-Next: run `M2-S1` when implementation is requested.
+Next: open draft PR.
 Blocker: none
