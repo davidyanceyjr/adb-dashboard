@@ -3,9 +3,9 @@
 ## Status
 
 - Contract status: Accepted
-- Specification version: 1.0.0
+- Specification version: 1.1.0
 - Product or system: ADB Dashboard
-- Version or milestone: Local bootstrap contract
+- Version or milestone: Local bootstrap plus read-only ADB discovery
 - Owners or decision authority: ADB Dashboard Project
 - Last reviewed: July 2026
 - Supersedes:
@@ -17,14 +17,13 @@ and version-control history.
 ## Purpose
 
 ADB Dashboard is a local Linux developer tool that serves a browser interface
-for current dashboard status and future Android Debug Bridge operations.
+for current dashboard status and read-only Android Debug Bridge inspection.
 
-The accepted current contract covers only the local bootstrap behavior needed to
-start, inspect, and secure the dashboard shell. Device operations, ADB process
-execution, interactive sessions, file transfer, artifact analysis, optional
-host-tool execution, jobs, retained output, and persistence beyond startup
-directories are outside this specification until a later accepted capability
-defines them.
+The accepted current contract covers local bootstrap behavior plus read-only ADB
+discovery and device inventory. Interactive sessions, file transfer, artifact
+analysis, optional host-tool execution, jobs, retained output, and persistence
+beyond startup directories are outside this specification until a later accepted
+capability defines them.
 
 ## Scope
 
@@ -41,12 +40,20 @@ defines them.
 - Unknown `/api/v1` route handling.
 - Browser host and origin rejection for current `/api/v1` routes.
 - Current browser shell visible state.
+- Discovery of the `adb` executable from the process `PATH`.
+- Read-only `adb version` execution.
+- Read-only `adb devices -l` execution and parsing.
+- `GET /api/v1/devices`.
+- Browser-visible ADB and device inventory state.
 - Standard `NIY` behavior for recognized unavailable actions and status fields.
 
 ### Out Of Scope
 
-- Executing `adb` or starting the ADB server.
-- Device discovery, device selection, and any device mutation.
+- Executing ADB commands other than `adb version` and `adb devices -l`.
+- Explicit `adb start-server`, `adb kill-server`, or ADB server lifecycle
+  controls. `adb devices -l` may use the host ADB client's normal server
+  behavior as documented by ADB.
+- Device selection and any device mutation.
 - Raw command execution, binary execution, PTY, WebSocket sessions, shell, and
   logcat.
 - File push or pull, screenshots, package workflows, input, reboot, networking,
@@ -61,10 +68,11 @@ defines them.
 
 | Actor or caller | Public interface | Trust or ownership boundary | Relevant capabilities |
 |---|---|---|---|
-| Local operator | CLI process invocation | User account running the process | `CAP-001` through `CAP-006`, `INV-NIY-001` |
-| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009` |
-| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `INV-NIY-001` |
+| Local operator | CLI process invocation | User account running the process | `CAP-001` through `CAP-006`, `CAP-010`, `INV-NIY-001` |
+| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009`, `CAP-012` |
+| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `CAP-011`, `INV-NIY-001` |
 | Host filesystem | Config, data directory, temp directory | Files owned or selected by process user | `CAP-004`, `CAP-005`, `CAP-006` |
+| Host ADB client | `adb` process invocation | Executable resolved from process `PATH` | `CAP-010`, `CAP-011` |
 
 ## Terminology
 
@@ -603,8 +611,9 @@ the documented XDG and fallback rules in `CAP-004`.
 
 **Contract status:** Implementation-ready
 
-**Goal:** A local operator can inspect current local readiness without starting
-long-running services or future ADB/device behavior.
+**Goal:** A local operator can inspect current local readiness and read-only ADB
+availability without starting long-running dashboard services or mutating
+devices.
 
 **Actors or callers:** Local shell user or process invoking
 `adb-dashboard doctor`.
@@ -618,8 +627,8 @@ stdout, writes no stderr when the report can be produced, and exits `0` when all
 required current checks pass.
 
 **Output, response, event, or visible state:** Field names, line order, status
-words, `NIY` function names, and `logLevel=LEVEL` are stable. Host paths and
-error details are host-specific.
+words, `NIY` function names, and `logLevel=LEVEL` are stable. Host paths, ADB
+version text, and error details are host-specific.
 
 Successful report shape:
 
@@ -631,10 +640,10 @@ dataDir: PASS path=PATH
 tempDir: PASS path=PATH
 cacheDir: NIY storage.cache is not implemented yet
 projectDir: NIY storage.projects is not implemented yet
-adbExecutable: NIY adb.discovery is not implemented yet
-adbVersion: NIY adb.discovery is not implemented yet
+adbExecutable: PASS path=PATH
+adbVersion: PASS version=VERSION
 adbServer: NIY adb.server is not implemented yet
-devices: NIY devices.refresh is not implemented yet
+devices: NIY devices.refresh is available through /api/v1/devices
 hostTools: NIY hosttools.discovery is not implemented yet
 ```
 
@@ -648,10 +657,10 @@ dataDir: FAIL path=PATH error=DETAIL
 tempDir: PASS path=PATH
 cacheDir: NIY storage.cache is not implemented yet
 projectDir: NIY storage.projects is not implemented yet
-adbExecutable: NIY adb.discovery is not implemented yet
-adbVersion: NIY adb.discovery is not implemented yet
+adbExecutable: PASS path=PATH
+adbVersion: PASS version=VERSION
 adbServer: NIY adb.server is not implemented yet
-devices: NIY devices.refresh is not implemented yet
+devices: NIY devices.refresh is available through /api/v1/devices
 hostTools: NIY hosttools.discovery is not implemented yet
 ```
 
@@ -661,17 +670,21 @@ resolved log level. If both `dataDir` and `tempDir` fail, both rows report
 `FAIL`.
 
 **Required side effects:** Create or validate the resolved data and temp
-directories using `CAP-005`.
+directories using `CAP-005`. Perform ADB discovery and version checks using
+`CAP-010`.
 
-**Forbidden side effects:** `doctor` must not execute `adb`, start the ADB
-server, enumerate devices, bind the listen address, open a browser, open
-WebSocket sessions, run optional host tools, start long-running processes,
-change device state, execute analysis tools, or modify analysis projects.
+**Forbidden side effects:** `doctor` must not execute ADB commands other than
+`adb version`, explicitly start the ADB server, enumerate devices, bind the
+listen address, open a browser, open WebSocket sessions, run optional host
+tools, start long-running processes, change device state, execute analysis
+tools, or modify analysis projects.
 
 **Errors and negative behavior:** Configuration parse and validation failures
 write the same stderr diagnostics and exit status as other commands and produce
 no stdout report. Filesystem failures produce a report with `overall: FAIL` and
-exit status `5`.
+exit status `5`. ADB discovery or version failures produce a report with
+`overall: FAIL` and exit status `3` when no higher-priority current failure is
+present.
 
 **Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** The report
 is produced after configuration resolution and current filesystem checks
@@ -686,13 +699,15 @@ names are stable for this specification version.
 
 #### Acceptance Criteria
 
-- `AC-006-001`: Given valid configuration and writable current directories,
-  when `adb-dashboard doctor` runs, then stdout matches the successful report
-  shape, stderr is empty, exit status is `0`, required current rows are `PASS`,
-  and unavailable rows are `NIY`.
+- `AC-006-001`: Given valid configuration, writable current directories, and
+  successful ADB version discovery, when `adb-dashboard doctor` runs, then
+  stdout matches the successful report shape, stderr is empty, exit status is
+  `0`, required current rows are `PASS`, and unavailable rows outside ADB
+  inventory are `NIY`.
 - `AC-006-002`: Given one or both current directory checks fail, when `doctor`
   runs, then stdout reports `overall: FAIL`, each failed row is `FAIL`,
-  unavailable rows remain `NIY`, stderr is empty, and exit status is `5`.
+  ADB rows follow `CAP-010`, unavailable non-ADB rows remain `NIY`, stderr is
+  empty, and exit status is `5`.
 - `AC-006-003`: Given invalid configuration, when `doctor` runs, then no stdout
   report is produced, stderr contains the configuration diagnostic, and exit
   status is `2`.
@@ -737,7 +752,8 @@ visible state from backend responses.
 - bind address equal to status `server.bind`;
 - read-only state `read-only: true` or `read-only: false`, matching status
   `server.readOnly`;
-- ADB state `adb: NIY`;
+- ADB state `adb: available`, `adb: unavailable`, or `adb: error` matching
+  backend status;
 - watcher state `watcher: NIY`;
 - jobs state `jobs: NIY`;
 - sessions state `sessions: NIY`;
@@ -895,8 +911,8 @@ Future mutating and WebSocket token enforcement remains out of scope.
 
 **Contract status:** Implementation-ready
 
-**Goal:** A browser or external developer tool can read current dashboard status
-without false success for unavailable future subsystems.
+**Goal:** A browser or external developer tool can read current dashboard and
+ADB summary status without false success for unavailable future subsystems.
 
 **Actors or callers:** Browser UI or HTTP client requesting
 `GET /api/v1/status`.
@@ -905,8 +921,8 @@ without false success for unavailable future subsystems.
 current host and origin policy.
 
 **Successful behavior:** The route returns the documented JSON object with
-current application and server fields and `NIY` status for unavailable
-subsystems.
+current application, server, and ADB summary fields plus `NIY` status for
+unavailable subsystems.
 
 **Output, response, event, or visible state:** Response status is `200`.
 Content type is `application/json`. JSON shape:
@@ -928,9 +944,9 @@ Content type is `application/json`. JSON shape:
     "bind": "127.0.0.1:8080"
   },
   "adb": {
-    "status": "NIY",
-    "executable": null,
-    "version": null,
+    "status": "available",
+    "executable": "PATH",
+    "version": "VERSION",
     "serverResponsive": "NIY"
   },
   "watcher": {
@@ -971,9 +987,9 @@ Normative current status schema:
 | `server.uptimeSeconds` | integer | `0` or greater |
 | `server.readOnly` | boolean | resolved read-only setting |
 | `server.bind` | string | actual bound `HOST:PORT` |
-| `adb.status` | string | exactly `NIY` |
-| `adb.executable` | null | exactly `null` |
-| `adb.version` | null | exactly `null` |
+| `adb.status` | string | `available`, `unavailable`, or `error` as defined by `CAP-010` |
+| `adb.executable` | string or null | resolved path when available or error after executable discovery; otherwise `null` |
+| `adb.version` | string or null | parsed version when available; otherwise `null` |
 | `adb.serverResponsive` | string | exactly `NIY` |
 | `watcher.status` | string | exactly `NIY` |
 | `watcher.lastSuccessfulPoll` | null | exactly `null` |
@@ -990,11 +1006,13 @@ Normative current status schema:
 Additional top-level fields and additional fields inside current status objects
 are forbidden until a later capability specifies them.
 
-**Required side effects:** None.
+**Required side effects:** The route may perform ADB discovery and version
+checks defined by `CAP-010`.
 
-**Forbidden side effects:** The route must not execute `adb`, start watchers,
-start jobs or sessions, run optional host tools, create project or artifact
-state, or report unavailable subsystems as successful.
+**Forbidden side effects:** The route must not execute ADB commands other than
+`adb version`, start watchers, start jobs or sessions, run optional host tools,
+create project or artifact state, or report unavailable subsystems as
+successful.
 
 **Errors and negative behavior:** Unknown API routes return the standard error
 envelope with status `404`. Host or origin policy rejection returns the error
@@ -1044,9 +1062,10 @@ are stable until a future capability replaces a field with specified behavior.
 - `AC-009-001`: Given a running server, when `GET /api/v1/status` is requested
   through an accepted same-origin loopback request, then the response has status
   `200`, content type `application/json`, and the documented JSON shape.
-- `AC-009-002`: Given ADB, watcher, jobs, sessions, storage, or host-tool
-  behavior is unavailable, when status is requested, then those fields report
-  `NIY` or documented unavailable values and do not report success.
+- `AC-009-002`: Given watcher, jobs, sessions, storage, host-tool behavior, or
+  ADB server responsiveness is unavailable, when status is requested, then those
+  fields report `NIY` or documented unavailable values and do not report
+  success.
 - `AC-009-003`: Given an unknown `/api/v1` route, when requested, then the
   response has status `404`, content type `application/json`, and the standard
   error envelope.
@@ -1067,6 +1086,345 @@ are stable until a future capability replaces a field with specified behavior.
   development build metadata values.
 - Evidence that does not count: handler construction tests without a running
   route path.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-010: ADB Executable And Version Discovery
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local operator can tell whether the dashboard can find an ADB
+client and read its version without performing device operations.
+
+**Actors or callers:** Local shell user invoking `adb-dashboard doctor`, browser
+UI or HTTP client requesting `GET /api/v1/status`, and dashboard process
+startup logic that builds status responses.
+
+**Inputs and preconditions:** The dashboard process has a `PATH` environment
+variable. An executable named `adb` may or may not be present on that path. If
+present, the executable may return successful, malformed, slow, or failing
+output for `adb version`.
+
+**Successful behavior:** The dashboard resolves the first executable named
+`adb` from `PATH`, invokes it as `adb version` using an argument vector, parses
+the first non-empty stdout line as the display version, and reports ADB
+availability through doctor and status surfaces.
+
+**Output, response, event, or visible state:** `doctor` replaces the prior ADB
+`NIY` rows with one of these stable forms:
+
+```text
+adbExecutable: PASS path=PATH
+adbVersion: PASS version=VERSION
+adbServer: NIY adb.server is not implemented yet
+```
+
+```text
+adbExecutable: FAIL error=not found in PATH
+adbVersion: NIY adb.version unavailable until adb executable is found
+adbServer: NIY adb.server is not implemented yet
+```
+
+```text
+adbExecutable: PASS path=PATH
+adbVersion: FAIL error=DETAIL
+adbServer: NIY adb.server is not implemented yet
+```
+
+`GET /api/v1/status` replaces the prior `adb` object with:
+
+```json
+{
+  "status": "available",
+  "executable": "PATH",
+  "version": "VERSION",
+  "serverResponsive": "NIY"
+}
+```
+
+When `adb` is absent, `adb.status` is `unavailable`, `adb.executable` is
+`null`, `adb.version` is `null`, and `adb.serverResponsive` is `NIY`. When
+`adb version` fails, `adb.status` is `error`, `adb.executable` is `PATH`,
+`adb.version` is `null`, and `adb.serverResponsive` is `NIY`.
+
+**Required side effects:** One bounded `adb version` process may be executed
+when an `adb` executable is found.
+
+**Forbidden side effects:** Discovery and version checks must not run shell
+commands through interpolation, execute `adb devices`, start explicit ADB server
+lifecycle commands, mutate devices, create project or artifact state, open
+sessions, or write outside the existing startup directories.
+
+**Errors and negative behavior:** Missing `adb` is reported as unavailable, not
+as process failure. A failing or malformed `adb version` command is reported as
+an ADB version failure; `doctor` exits `3`, while status remains HTTP `200` and
+reports `adb.status` as `error`. The command is killed and reported as failure
+if it does not complete within three seconds.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** ADB
+discovery occurs after configuration validation and startup-directory checks.
+Each status or doctor request may perform fresh discovery. Timed-out or failed
+processes are not retried during the same request.
+
+**Security, authorization, privacy, and data safety:** The dashboard must pass
+arguments directly as `["version"]`. Diagnostics must not include environment
+dumps or command-line arguments beyond the resolved executable path and bounded
+error detail.
+
+**Compatibility and versioning:** `adb` path lookup from process `PATH`,
+`doctor` row names, status field names, and timeout semantics are stable for
+this specification version.
+
+#### Acceptance Criteria
+
+- `AC-010-001`: Given a deterministic `adb` executable on `PATH` whose
+  `version` command succeeds, when `adb-dashboard doctor` runs, then stdout
+  reports `adbExecutable: PASS path=PATH`, `adbVersion: PASS version=VERSION`,
+  `adbServer: NIY`, stderr is empty, and exit status remains `0` when all other
+  required current checks pass.
+- `AC-010-002`: Given no `adb` executable on `PATH`, when `doctor` runs, then
+  stdout reports the documented unavailable ADB rows, stderr is empty, and exit
+  status is `3` when all non-ADB required current checks pass.
+- `AC-010-003`: Given `adb version` exits nonzero, times out, or produces no
+  non-empty stdout line, when `doctor` runs, then stdout reports
+  `adbExecutable: PASS`, `adbVersion: FAIL`, `adbServer: NIY`, stderr is empty,
+  and exit status is `3`.
+- `AC-010-004`: Given the server is running, when `GET /api/v1/status` is
+  requested after successful ADB discovery, then the `adb` object reports
+  `status: available`, the resolved executable path, parsed version, and
+  `serverResponsive: NIY`.
+- `AC-010-005`: Given the server is running and ADB is absent or version
+  discovery fails, when status is requested, then the `adb` object reports the
+  documented unavailable or error state without returning ADB command stderr,
+  environment values, or false success.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: CLI process invocation for `doctor` and HTTP request
+  through production routing for status.
+- Focused evidence expected: automated process and HTTP tests with isolated
+  `PATH` fixtures asserting stdout, stderr, exit status, JSON fields, timeout,
+  and forbidden command side effects.
+- Real-path exercise: run `adb-dashboard doctor` and a running server's
+  `/api/v1/status` against a deterministic fake `adb` executable and against a
+  `PATH` without `adb`.
+- Required environment: Linux host capable of process execution and loopback
+  HTTP.
+- Permitted deterministic substitutes: fake `adb` executables in temporary
+  directories.
+- Evidence that does not count: unit tests of path lookup without invoking
+  `doctor` or status routes.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-011: Read-Only Device Inventory API
+
+**Contract status:** Implementation-ready
+
+**Goal:** A browser or external local tool can list attached ADB devices through
+the dashboard without mutating device state.
+
+**Actors or callers:** Browser UI or HTTP client requesting
+`GET /api/v1/devices`.
+
+**Inputs and preconditions:** The server is running, host and origin checks pass,
+and ADB discovery from `CAP-010` succeeds. The resolved ADB client may return
+successful, malformed, slow, or failing output for `adb devices -l`.
+
+**Successful behavior:** `GET /api/v1/devices` invokes the resolved ADB client
+as `adb devices -l`, parses the standard device list output, and returns a JSON
+inventory. The route is read-only from the dashboard perspective.
+
+**Output, response, event, or visible state:** Response status is `200`.
+Content type is `application/json`. Successful JSON shape:
+
+```json
+{
+  "adb": {
+    "status": "available",
+    "executable": "PATH",
+    "version": "VERSION"
+  },
+  "devices": [
+    {
+      "serial": "SERIAL",
+      "state": "device",
+      "product": "PRODUCT",
+      "model": "MODEL",
+      "device": "DEVICE",
+      "transportId": "TRANSPORT_ID"
+    }
+  ]
+}
+```
+
+The `devices` array is empty when ADB reports no devices. `serial` and `state`
+are required strings for each parsed row. `product`, `model`, `device`, and
+`transportId` are strings or `null` when omitted by ADB.
+
+When ADB is unavailable, response status is `503` and the standard API error
+envelope uses `error.code` `adb_unavailable`. When `adb devices -l` fails,
+times out, or produces malformed device rows, response status is `502` and the
+standard API error envelope uses `error.code` `adb_devices_failed`.
+
+**Required side effects:** One bounded `adb devices -l` process may be executed
+per accepted request. The host ADB client may communicate with its normal local
+ADB server as part of that command.
+
+**Forbidden side effects:** The route must not execute any ADB command other
+than `devices -l`, mutate devices, select a device, start interactive sessions,
+read files from devices, write files to devices, install packages, capture
+screenshots, stream logcat, reboot devices, create jobs, persist inventory, or
+write project or artifact state.
+
+**Errors and negative behavior:** Host and origin policy rejection runs before
+ADB discovery or command execution. Missing ADB, failed version discovery,
+failed device listing, timeout after three seconds, and malformed output are
+reported with the documented status and error envelope. Error responses contain
+no route-specific `devices` array.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** The route
+performs ADB discovery before device listing. Timed-out device-list processes
+are killed. No retry is attempted during the same request.
+
+**Security, authorization, privacy, and data safety:** ADB is invoked with an
+argument vector exactly equivalent to `["devices", "-l"]`. Device serials and
+properties are returned only to accepted loopback requests. Error details must
+not dump full environment values or unrelated command output.
+
+**Compatibility and versioning:** Route path, response status meanings, JSON
+field names, and error codes are stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-011-001`: Given a deterministic `adb` executable whose `version` and
+  `devices -l` commands succeed with zero device rows, when
+  `GET /api/v1/devices` is requested, then the response has status `200`, the
+  documented ADB object, and an empty `devices` array.
+- `AC-011-002`: Given `adb devices -l` returns one or more device rows with
+  attributes, when the route is requested, then the response has status `200`
+  and each row is parsed into the documented `serial`, `state`, `product`,
+  `model`, `device`, and `transportId` fields.
+- `AC-011-003`: Given ADB discovery is unavailable or version discovery fails,
+  when the route is requested, then the response has status `503`, error code
+  `adb_unavailable`, no `devices` array, and no `adb devices -l` command is
+  executed.
+- `AC-011-004`: Given `adb devices -l` exits nonzero, times out, or returns a
+  malformed row, when the route is requested, then the response has status
+  `502`, error code `adb_devices_failed`, no `devices` array, and no requested
+  action is reported as successful.
+- `AC-011-005`: Given a foreign Host, absolute-form URL host, or Origin, when
+  `GET /api/v1/devices` is requested, then the response has status `403`, the
+  documented security error envelope, and no ADB executable is invoked.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request through production routing.
+- Focused evidence expected: automated HTTP tests with fake ADB executables
+  asserting response status, JSON shape, parsed devices, error envelopes,
+  timeout, and forbidden command side effects.
+- Real-path exercise: start the server with an isolated `PATH` containing a
+  deterministic fake `adb`, request `/api/v1/devices` for zero-device,
+  multi-device, ADB-unavailable, and command-failure cases, and inspect process
+  invocation logs.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Permitted deterministic substitutes: fake `adb` executables that model ADB
+  stdout, stderr, status, and timeout behavior.
+- Evidence that does not count: parser-only tests without HTTP routing or ADB
+  process invocation checks.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-012: Browser ADB And Device Inventory View
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser can see ADB availability and read-only device
+inventory returned by the backend.
+
+**Actors or callers:** Browser loaded from the dashboard server.
+
+**Inputs and preconditions:** The server is running and serves embedded frontend
+assets. `/api/v1/bootstrap`, `/api/v1/status`, and `/api/v1/devices` are
+available through same-origin requests.
+
+**Successful behavior:** The browser shell requests bootstrap and status as in
+`CAP-007`, then requests `/api/v1/devices` when status reports ADB available,
+and renders backend-derived ADB and device state.
+
+**Output, response, event, or visible state:** The loaded page visibly contains:
+
+- ADB state `adb: available`, `adb: unavailable`, or `adb: error` matching
+  status.
+- A device count matching the `/api/v1/devices` response when device inventory
+  succeeds.
+- For each returned device, visible serial and state.
+- `devices: unavailable` when ADB is unavailable or device inventory fails.
+
+The page must not render ADB executable paths, bootstrap token values, command
+stderr, environment values, active mutation controls, forms, or links for
+out-of-scope workflows.
+
+**Required side effects:** Browser requests are made only to current backend
+routes.
+
+**Forbidden side effects:** The UI must not expose active controls, forms, or
+links for shell, logcat, install, uninstall, file transfer, screenshots, input,
+reboot, networking, package workflows, artifact analysis, host-tool execution,
+or destructive actions.
+
+**Errors and negative behavior:** If device inventory fails, the shell shows
+`devices: unavailable` and must not show a stale or invented successful device
+list. Bootstrap or status failure behavior remains governed by `CAP-007`.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Frontend
+state is derived from backend responses after page load. The device request is
+made after status reports ADB availability.
+
+**Security, authorization, privacy, and data safety:** Backend security and
+capability checks remain authoritative even when the UI hides or disables a
+control.
+
+**Compatibility and versioning:** Current visible labels and state values are
+stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-012-001`: Given status reports ADB available and `/api/v1/devices`
+  returns devices, when the root browser shell is loaded, then the page renders
+  `adb: available`, the correct device count, and each device serial and state
+  from the backend response.
+- `AC-012-002`: Given status reports ADB unavailable or `/api/v1/devices`
+  fails, when the shell renders, then it shows `devices: unavailable` and does
+  not show a successful or stale device list.
+- `AC-012-003`: Given out-of-scope ADB workflows remain unspecified, when the
+  shell is loaded, then controls, forms, and links for those workflows are
+  absent and cannot report success.
+- `AC-012-004`: Given the shell renders ADB and device state, then it does not
+  render token values, ADB executable paths, command stderr, or environment
+  values.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: browser load through the running server.
+- Focused evidence expected: browser automation or HTTP asset test plus visible
+  state assertions for backend-provided ADB and device inventory state.
+- Real-path exercise: start the server with a deterministic fake `adb`, open the
+  root page, and inspect visible ADB and device state plus absence of forbidden
+  controls and sensitive values.
+- Required environment: Linux host with loopback networking and a modern
+  JavaScript-capable browser or deterministic browser automation.
+- Permitted deterministic substitutes: browser automation and fake `adb`
+  executables.
+- Evidence that does not count: static component rendering without backend
+  responses or fake success data unreachable in production.
 
 #### Blocking Open Questions
 
@@ -1221,6 +1579,7 @@ The current API root is `/api/v1`. Current responses use JSON with content type
 
 - `GET /api/v1/bootstrap`
 - `GET /api/v1/status`
+- `GET /api/v1/devices`
 - unknown `/api/v1` route error handling
 
 No current route requires a request body.
@@ -1232,7 +1591,7 @@ No current route requires a request body.
 | `0` | Help, version, successful doctor report, or clean server shutdown. |
 | `1` | General startup or runtime failure not otherwise classified. |
 | `2` | Invalid command-line usage or configuration. |
-| `3` | Reserved for future ADB executable discovery failure. |
+| `3` | ADB executable or ADB version discovery failure when no higher-priority failure is present. |
 | `4` | Listen address unavailable. |
 | `5` | Required startup filesystem directory unavailable. |
 | `6` | Recognized command or function is `NIY`; no requested action was performed. |
@@ -1247,8 +1606,9 @@ No current route requires a request body.
   doctor output, CLI diagnostics, or visible UI.
 - `INV-DATA-002`: Configuration failure must happen before startup directory
   creation.
-- `INV-DATA-003`: Current behavior must not execute `adb`, optional host tools,
-  or other external device-operation commands.
+- `INV-DATA-003`: Current behavior may execute only the ADB commands named by
+  `CAP-010` and `CAP-011`. It must not execute optional host tools or other
+  external device-operation commands.
 
 ## Compatibility And Migration
 
@@ -1256,7 +1616,7 @@ No current route requires a request body.
 - The HTTP server is local-only and uses plain HTTP on loopback.
 - Current command names, option names, configuration keys, environment variable
   names, exit-status meanings, doctor row names, API route paths, JSON field
-  names, and `NIY` function names are stable for specification version `1.0.0`.
+  names, and `NIY` function names are stable for specification version `1.1.0`.
 - Additional fields, routes, commands, UI controls, files, and configuration
   keys require a later accepted capability.
 - No persisted data schema or migration behavior exists in the current
@@ -1264,26 +1624,28 @@ No current route requires a request body.
 
 ## Known Limitations
 
-- The dashboard does not execute `adb` under this specification.
+- The dashboard executes only `adb version` and `adb devices -l` under this
+  specification.
 - The dashboard does not implement the ADB wire protocol.
-- Device and host-tool workflows are unavailable until later specifications
-  define exact behavior.
+- Device mutation, interactive ADB workflows, and host-tool workflows are
+  unavailable until later specifications define exact behavior.
 - Fastboot is outside the current contract.
 
 ## Open Questions
 
-- None for `CAP-001` through `CAP-009` and `INV-NIY-001`.
+- None for `CAP-001` through `CAP-012` and `INV-NIY-001`.
 
-Future ADB, device, WebSocket, host-tool, artifact, persistence, logging
-redaction, request-correlation, body parsing, upload, retention, cleanup,
-performance, and migration behavior requires separate specification before it
-can be implemented.
+Future mutating ADB, interactive device, WebSocket, host-tool, artifact,
+persistence, logging redaction, request-correlation, body parsing, upload,
+retention, cleanup, performance, and migration behavior requires separate
+specification before it can be implemented.
 
 ## Specification Acceptance Record
 
 - Audit result: SPECIFICATION ACCEPTED
-- Reviewed capabilities: `CAP-001` through `CAP-009`; `INV-NIY-001`
-- Blocking gaps: None for the local bootstrap contract
+- Reviewed capabilities: `CAP-001` through `CAP-012`; `INV-NIY-001`
+- Blocking gaps: None for the local bootstrap and read-only ADB discovery
+  contract
 - Evidence or review reference: Authored against
   `docs/SPECIFICATION_GUIDE.md`, `docs/SPECIFICATION.template.md`,
   `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and the source material available

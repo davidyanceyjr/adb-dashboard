@@ -3,15 +3,15 @@
 ## Status
 
 - Roadmap status: Accepted
-- Roadmap version: 1.0.0
+- Roadmap version: 1.1.0
 - Specification source: `docs/SPECIFICATION.md`
-- Specification version: 1.0.0
-- Current milestone: M1
-- Next eligible slice: none for accepted M1 roadmap
+- Specification version: 1.1.0
+- Current milestone: M2
+- Next eligible slice: M2-S1
 - Last reviewed: 2026-07-29
 
-This roadmap selects implementation order for the accepted local bootstrap
-contract. It does not claim behavior is implemented.
+This roadmap selects implementation order for the accepted local bootstrap and
+read-only ADB discovery contract. It does not claim behavior is implemented.
 
 ## Slice Rules
 
@@ -383,25 +383,259 @@ Every implementation slice must:
 - Completion evidence reference: `.codex/plans/current.md` and
   `.codex/cycles/history.md`.
 
+## Milestone M2: Read-Only ADB Discovery
+
+### Slice M2-S1: Doctor ADB Executable And Version Discovery
+
+- Status: accepted
+- Mode: feature
+- Purpose: Make ADB executable and version discovery observable in `doctor`
+  without performing device operations.
+- Specification references: `CAP-006`, `CAP-010`, `AC-006-001`,
+  `AC-010-001`, `AC-010-002`, `AC-010-003`, `INV-DATA-003`
+- Observable result: A local operator can run `adb-dashboard doctor` with a
+  deterministic `PATH` and observe documented ADB executable, version,
+  unavailable, and failure rows plus exit status `0` or `3` as appropriate.
+- Primary acceptance boundary: CLI process invocation with isolated `PATH` and
+  fake ADB executables.
+- Expected red or baseline-green evidence: The focused doctor process test
+  fails because ADB rows still report static `NIY`, `adb version` is not
+  invoked, missing ADB does not produce exit status `3`, or version failures do
+  not produce the documented report.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused process-test command for doctor behavior; record the resolved command
+  in `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Build or invoke the real command, run
+  `adb-dashboard doctor` with a temporary fake `adb` that succeeds, with a
+  `PATH` containing no `adb`, and with a fake `adb version` failure; inspect
+  stdout, stderr, exit status, and fake-command invocation logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, and build commands discovered from repository entry points.
+- Required environment: Linux host capable of process execution and temporary
+  executable fixtures.
+- Dependencies: `M1-S6`.
+- In scope:
+  - Resolve `adb` from the process `PATH`.
+  - Invoke only `adb version` with an argument vector.
+  - Parse the first non-empty stdout line as the display version.
+  - Report doctor ADB rows and exit status `3` for ADB discovery/version
+    failure when no higher-priority failure is present.
+  - Timeout and nonzero status handling for `adb version`.
+- Out of scope:
+  - `GET /api/v1/status` ADB fields, `GET /api/v1/devices`, browser device
+    rendering, explicit ADB server controls, `adb devices`, shell, logcat,
+    install, file transfer, screenshots, device selection, and device mutation.
+- Risks:
+  - Accidentally invoking host `adb` during tests instead of the fake
+    executable.
+  - Leaking environment values or command stderr beyond bounded diagnostics.
+- Stop conditions:
+  - Process tests cannot isolate `PATH` and fake executables.
+  - Implementing the slice would require shell interpolation or broader ADB
+    command execution.
+- Documentation synchronization: Update user-facing doctor/ADB documentation if
+  it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-006-001`, `AC-010-001`, `AC-010-002`, and `AC-010-003` have
+  green process-level evidence, only `adb version` is invoked, applicable broad
+  checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M2-S2: Status API ADB Summary
+
+- Status: accepted
+- Mode: feature
+- Purpose: Expose ADB executable and version discovery through the current
+  status API without device inventory side effects.
+- Specification references: `CAP-009`, `CAP-010`, `AC-009-001`,
+  `AC-009-002`, `AC-009-004`, `AC-010-004`, `AC-010-005`, `INV-SEC-001`,
+  `INV-DATA-003`
+- Observable result: A browser or local HTTP client can request
+  `/api/v1/status` and observe `adb.status`, `adb.executable`, `adb.version`,
+  and `adb.serverResponsive` values derived from real ADB discovery.
+- Primary acceptance boundary: HTTP request through production routing with
+  isolated `PATH` and fake ADB executables.
+- Expected red or baseline-green evidence: The focused HTTP status test fails
+  because the `adb` object still reports static `NIY`, leaks forbidden command
+  details, invokes unsupported ADB commands, or fails to represent absent and
+  failed ADB discovery as documented.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused HTTP status test command; record the resolved command in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with a fake successful `adb`, request
+  `/api/v1/status`, restart with no `adb` on `PATH`, request status again, then
+  restart with a failing fake `adb version`; inspect status, JSON bodies, and
+  fake-command invocation logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, and build commands discovered from repository entry points.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Dependencies: `M2-S1`.
+- In scope:
+  - Status-route ADB discovery and version fields.
+  - Available, unavailable, and error ADB summary states.
+  - Preservation of existing server, watcher, jobs, sessions, storage, and host
+    tools fields.
+  - Host and origin rejection before ADB command execution.
+- Out of scope:
+  - `/api/v1/devices`, browser device rendering, explicit ADB server controls,
+    device listing, shell, logcat, install, file transfer, screenshots, device
+    selection, and device mutation.
+- Risks:
+  - Turning every status request into unsupported device inventory work.
+  - Leaking command stderr, environment values, or token values in status JSON.
+- Stop conditions:
+  - Host/origin middleware cannot be proven to run before ADB discovery.
+  - Status behavior cannot be exercised through the running HTTP server.
+- Documentation synchronization: Update user-facing status/API documentation if
+  it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: Referenced acceptance criteria have green HTTP evidence, status
+  invokes only `adb version`, rejected security requests invoke no ADB process,
+  applicable broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M2-S3: Read-Only Devices API
+
+- Status: accepted
+- Mode: feature
+- Purpose: Add a read-only device inventory route backed by `adb devices -l`.
+- Specification references: `CAP-008`, `CAP-011`, `AC-011-001`,
+  `AC-011-002`, `AC-011-003`, `AC-011-004`, `AC-011-005`, `INV-SEC-001`,
+  `INV-SEC-003`, `INV-DATA-003`
+- Observable result: A same-origin local HTTP client can request
+  `/api/v1/devices` and receive parsed zero-device or multi-device JSON, while
+  ADB-unavailable, command-failure, malformed-output, timeout, and rejected
+  security requests fail with documented envelopes and no false success.
+- Primary acceptance boundary: HTTP request through production routing with
+  fake ADB executables.
+- Expected red or baseline-green evidence: The focused HTTP devices test fails
+  because `/api/v1/devices` is absent, does not invoke `adb devices -l`, does
+  not parse rows, returns the wrong error envelope, or invokes ADB after a
+  rejected Host or Origin request.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused HTTP devices test command; record the resolved command in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake `adb` fixtures for zero-device,
+  multi-device, ADB-unavailable, `devices -l` failure, and malformed output
+  cases; request `/api/v1/devices`; inspect status codes, JSON bodies, and
+  fake-command invocation logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, and build commands discovered from repository entry points.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Dependencies: `M2-S2`.
+- In scope:
+  - `GET /api/v1/devices`.
+  - `adb devices -l` invocation with an argument vector.
+  - Parsing serial, state, product, model, device, and transport ID fields.
+  - `503 adb_unavailable`, `502 adb_devices_failed`, timeout, malformed output,
+    and security rejection behavior.
+- Out of scope:
+  - Browser rendering, persisted inventory, polling or watchers, explicit ADB
+    server controls, device selection, shell, logcat, install, file transfer,
+    screenshots, package workflows, jobs, WebSockets, and device mutation.
+- Risks:
+  - Treating malformed or partial ADB output as successful inventory.
+  - Host ADB client side effects beyond the normal behavior of
+    `adb devices -l`.
+- Stop conditions:
+  - The route cannot be exercised through production routing.
+  - Deterministic fake ADB fixtures cannot model success, failure, malformed,
+    and timeout cases without invoking host ADB.
+- Documentation synchronization: Update user-facing API documentation if it
+  exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: Referenced acceptance criteria have green HTTP evidence, only
+  `adb version` and `adb devices -l` are invoked, rejected security requests
+  invoke no ADB process, applicable broad checks pass or have recorded blockers,
+  and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M2-S4: Browser ADB Device Inventory View
+
+- Status: accepted
+- Mode: feature
+- Purpose: Render backend-derived ADB availability and read-only device
+  inventory in the embedded browser shell.
+- Specification references: `CAP-007`, `CAP-011`, `CAP-012`,
+  `AC-012-001`, `AC-012-002`, `AC-012-003`, `AC-012-004`,
+  `INV-FRONTEND-001`, `INV-SEC-004`, `INV-DATA-003`
+- Observable result: A browser loaded from the running server shows ADB
+  availability, device count, and device serial/state values from backend
+  responses, while failed inventory shows unavailable state and no unsupported
+  controls or sensitive values.
+- Primary acceptance boundary: Browser load through the running server.
+- Expected red or baseline-green evidence: The focused browser test fails
+  because the shell still renders static ADB `NIY`, does not request
+  `/api/v1/devices` when ADB is available, does not render returned devices,
+  shows stale success after inventory failure, exposes unsupported controls, or
+  renders executable paths, tokens, stderr, or environment values.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused browser or HTTP asset test command; record the resolved command in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with a deterministic fake `adb`, load
+  the root page in a modern browser or deterministic browser automation, inspect
+  visible ADB and device state, then repeat with inventory failure and inspect
+  unavailable state plus absence of unsupported controls and sensitive values.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, and frontend asset checks discovered from repository entry
+  points.
+- Required environment: Linux host with loopback networking, temporary
+  executable fixtures, and a modern JavaScript-capable browser or deterministic
+  browser automation.
+- Dependencies: `M2-S3`.
+- In scope:
+  - Root shell rendering for ADB available, unavailable, and error states.
+  - Device inventory request after status reports ADB availability.
+  - Visible device count, serial, and state.
+  - Inventory failure fallback.
+  - Absence of unsupported ADB controls and sensitive values.
+- Out of scope:
+  - Device actions, polling, watchers, sessions, WebSockets, file transfer,
+    screenshots, logcat, package workflows, artifact analysis, settings,
+    authentication, persistence, theming beyond the current shell, packaging,
+    and deployment.
+- Risks:
+  - Frontend tests passing against static markup instead of backend-derived
+    ADB/device responses.
+  - Accidentally exposing ADB executable paths or command diagnostics in the UI.
+- Stop conditions:
+  - Browser automation or an equivalent deterministic visible-state boundary is
+    unavailable.
+  - Implementing the view would require controls or routes for out-of-scope ADB
+    behavior.
+- Documentation synchronization: Update user-facing browser/API documentation
+  if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: Referenced acceptance criteria have green browser-boundary
+  evidence, backend-derived ADB and device states are observed, forbidden
+  controls and sensitive rendering are absent, applicable broad checks pass or
+  have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
 ## Dependency Order
 
 ```text
 M1-S1 -> M1-S2 -> M1-S3 -> M1-S4 -> M1-S5 -> M1-S6
+M1-S6 -> M2-S1 -> M2-S2 -> M2-S3 -> M2-S4
 ```
 
 ## Future Milestones
 
-Future ADB, device, WebSocket, host-tool, artifact, persistence, logging
-redaction, request-correlation, body parsing, upload, retention, cleanup,
-performance, migration, packaging, release, and deployment behavior requires a
-later accepted specification before roadmap slices are added.
+Future mutating ADB, interactive device, WebSocket, host-tool, artifact,
+persistence, logging redaction, request-correlation, body parsing, upload,
+retention, cleanup, performance, migration, packaging, release, and deployment
+behavior requires a later accepted specification before roadmap slices are
+added.
 
 ## Roadmap Acceptance Record
 
 - Audit result: ROADMAP ACCEPTED
-- Reviewed slices: `M1-S1` through `M1-S6`
-- Blocking gaps: None for the accepted local bootstrap contract.
+- Reviewed slices: `M1-S1` through `M1-S6`; `M2-S1` through `M2-S4`
+- Blocking gaps: None for the accepted local bootstrap and read-only ADB
+  discovery contract.
 - Evidence or review reference: Authored against `docs/SPECIFICATION.md`
-  version `1.0.0`, `docs/ROADMAP_GUIDE.md`,
+  version `1.1.0`, `docs/ROADMAP_GUIDE.md`,
   `docs/ROADMAP.template.md`, `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and
   repository source material available on 2026-07-29.
