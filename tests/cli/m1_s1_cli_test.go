@@ -700,6 +700,106 @@ func TestM1S4BrowserOpenFailureWarnsAndServerContinues(t *testing.T) {
 	}
 }
 
+func TestM1S5BootstrapTokensAndSecurityPolicy(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+
+	first := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+	firstAddr := serverAddressFromStartLine(t, first.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	firstBaseURL := "http://" + firstAddr
+
+	firstBootstrap := requestJSON(t, httpRequestSpec{
+		method: "GET",
+		url:    firstBaseURL + "/api/v1/bootstrap",
+		headers: map[string]string{
+			"Origin": firstBaseURL,
+		},
+	})
+	if firstBootstrap.statusCode != http.StatusOK {
+		t.Fatalf("bootstrap status = %d, body = %s", firstBootstrap.statusCode, firstBootstrap.body)
+	}
+	if !strings.HasPrefix(firstBootstrap.contentType, "application/json") {
+		t.Fatalf("bootstrap content type = %q, want application/json", firstBootstrap.contentType)
+	}
+	firstTokens := assertBootstrapJSON(t, firstBootstrap.body)
+
+	status := requestJSON(t, httpRequestSpec{method: "GET", url: firstBaseURL + "/api/v1/status"})
+	if status.statusCode != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", status.statusCode, status.body)
+	}
+	assertNoTokenDisclosure(t, status.body, firstTokens)
+
+	for _, test := range []struct {
+		name     string
+		request  httpRequestSpec
+		wantCode string
+	}{
+		{
+			name: "foreign_host",
+			request: httpRequestSpec{
+				method: "GET",
+				url:    firstBaseURL + "/api/v1/status",
+				host:   "foreign.example",
+			},
+			wantCode: "forbidden_host",
+		},
+		{
+			name: "foreign_absolute_url_host",
+			request: httpRequestSpec{
+				method:      "GET",
+				url:         firstBaseURL + "/api/v1/status",
+				requestURI:  "http://foreign.example/api/v1/status",
+				rawHTTPHost: firstAddr,
+			},
+			wantCode: "forbidden_absolute_url_host",
+		},
+		{
+			name: "foreign_origin",
+			request: httpRequestSpec{
+				method: "GET",
+				url:    firstBaseURL + "/api/v1/bootstrap",
+				headers: map[string]string{
+					"Origin": "http://foreign.example",
+				},
+			},
+			wantCode: "forbidden_origin",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := requestJSON(t, test.request)
+			if response.statusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+			}
+			if !strings.HasPrefix(response.contentType, "application/json") {
+				t.Fatalf("content type = %q, want application/json", response.contentType)
+			}
+			assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+			assertNoTokenDisclosure(t, response.body, firstTokens)
+		})
+	}
+
+	first.signal(t, syscall.SIGTERM)
+	result := first.wait(t)
+	if result.code != 0 {
+		t.Fatalf("first server exit status = %d, want 0; stderr = %q", result.code, result.stderr)
+	}
+
+	second := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+	defer second.cleanup(t)
+	secondAddr := serverAddressFromStartLine(t, second.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	secondBootstrap := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + secondAddr + "/api/v1/bootstrap"})
+	if secondBootstrap.statusCode != http.StatusOK {
+		t.Fatalf("second bootstrap status = %d, body = %s", secondBootstrap.statusCode, secondBootstrap.body)
+	}
+	secondTokens := assertBootstrapJSON(t, secondBootstrap.body)
+	if firstTokens.csrfToken == secondTokens.csrfToken {
+		t.Fatalf("csrfToken reused after restart: %q", firstTokens.csrfToken)
+	}
+	if firstTokens.webSocketToken == secondTokens.webSocketToken {
+		t.Fatalf("webSocketToken reused after restart: %q", firstTokens.webSocketToken)
+	}
+}
+
 func buildDashboard(t *testing.T) string {
 	t.Helper()
 
@@ -877,6 +977,97 @@ func httpGet(t *testing.T, url string) (int, string, []byte) {
 		t.Fatalf("read %s response: %v", url, err)
 	}
 	return response.StatusCode, response.Header.Get("Content-Type"), body
+}
+
+type httpRequestSpec struct {
+	method      string
+	url         string
+	host        string
+	headers     map[string]string
+	requestURI  string
+	rawHTTPHost string
+}
+
+type httpResponse struct {
+	statusCode  int
+	contentType string
+	body        []byte
+}
+
+func requestJSON(t *testing.T, spec httpRequestSpec) httpResponse {
+	t.Helper()
+
+	if spec.requestURI != "" {
+		return rawHTTPRequest(t, spec)
+	}
+
+	client := http.Client{Timeout: 5 * time.Second}
+	request, err := http.NewRequest(spec.method, spec.url, nil)
+	if err != nil {
+		t.Fatalf("new request %s %s: %v", spec.method, spec.url, err)
+	}
+	if spec.host != "" {
+		request.Host = spec.host
+	}
+	for key, value := range spec.headers {
+		request.Header.Set(key, value)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s: %v", spec.method, spec.url, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read %s response: %v", spec.url, err)
+	}
+	return httpResponse{statusCode: response.StatusCode, contentType: response.Header.Get("Content-Type"), body: body}
+}
+
+func rawHTTPRequest(t *testing.T, spec httpRequestSpec) httpResponse {
+	t.Helper()
+
+	address := spec.rawHTTPHost
+	if address == "" {
+		address = strings.TrimPrefix(spec.url, "http://")
+		if slash := strings.IndexByte(address, '/'); slash >= 0 {
+			address = address[:slash]
+		}
+	}
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial %s: %v", address, err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	host := spec.rawHTTPHost
+	if spec.host != "" {
+		host = spec.host
+	}
+	if host == "" {
+		host = address
+	}
+	var request bytes.Buffer
+	fmt.Fprintf(&request, "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n", spec.method, spec.requestURI, host)
+	for key, value := range spec.headers {
+		fmt.Fprintf(&request, "%s: %s\r\n", key, value)
+	}
+	request.WriteString("\r\n")
+	if _, err := conn.Write(request.Bytes()); err != nil {
+		t.Fatalf("write raw HTTP request: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read raw HTTP response: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read raw HTTP body: %v", err)
+	}
+	return httpResponse{statusCode: response.StatusCode, contentType: response.Header.Get("Content-Type"), body: body}
 }
 
 func isolatedEnv(t *testing.T) []string {
@@ -1087,6 +1278,77 @@ func assertM1S4StatusJSON(t *testing.T, body []byte, bind string, readOnly bool)
 			t.Fatalf("status JSON contains forbidden text %q: %s", text, body)
 		}
 	}
+}
+
+type bootstrapTokens struct {
+	csrfToken      string
+	webSocketToken string
+}
+
+func assertBootstrapJSON(t *testing.T, body []byte) bootstrapTokens {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal bootstrap JSON: %v\nbody: %s", err, body)
+	}
+	assertKeys(t, got, "csrfToken", "webSocketToken", "statusUrl")
+	csrfToken := assertTokenField(t, got, "csrfToken")
+	webSocketToken := assertTokenField(t, got, "webSocketToken")
+	if csrfToken == webSocketToken {
+		t.Fatalf("csrfToken and webSocketToken must be independent; both were %q", csrfToken)
+	}
+	if got["statusUrl"] != "/api/v1/status" {
+		t.Fatalf("statusUrl = %#v, want /api/v1/status", got["statusUrl"])
+	}
+	return bootstrapTokens{csrfToken: csrfToken, webSocketToken: webSocketToken}
+}
+
+func assertTokenField(t *testing.T, got map[string]any, key string) string {
+	t.Helper()
+
+	value, ok := got[key].(string)
+	if !ok {
+		t.Fatalf("%s = %#v, want string", key, got[key])
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{32,}$`).MatchString(value) {
+		t.Fatalf("%s = %q, want at least 32 URL-safe base64 characters", key, value)
+	}
+	return value
+}
+
+func assertSecurityErrorEnvelope(t *testing.T, body []byte, code string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal security error JSON: %v\nbody: %s", err, body)
+	}
+	assertObject(t, got, map[string]any{
+		"error": map[string]any{
+			"code":      code,
+			"message":   "Request rejected by dashboard browser security policy",
+			"details":   map[string]any{},
+			"requestId": nil,
+		},
+	})
+}
+
+func assertNoTokenDisclosure(t *testing.T, body []byte, tokens bootstrapTokens) {
+	t.Helper()
+
+	text := string(body)
+	for _, forbidden := range []string{"csrfToken", "webSocketToken", tokens.csrfToken, tokens.webSocketToken} {
+		if forbidden != "" && strings.Contains(text, forbidden) {
+			t.Fatalf("response disclosed %q: %s", forbidden, body)
+		}
+	}
+}
+
+func serverAddressFromStartLine(t *testing.T, line string) string {
+	t.Helper()
+
+	return strings.TrimPrefix(line[strings.LastIndex(line, "addr="):], "addr=")
 }
 
 type nonEmptyString struct{}

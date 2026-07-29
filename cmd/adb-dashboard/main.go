@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -679,6 +682,12 @@ type hostToolsStatus struct {
 	Unavailable int    `json:"unavailable"`
 }
 
+type bootstrapResponse struct {
+	CSRFToken      string `json:"csrfToken"`
+	WebSocketToken string `json:"webSocketToken"`
+	StatusURL      string `json:"statusUrl"`
+}
+
 type errorEnvelope struct {
 	Error apiError `json:"error"`
 }
@@ -697,10 +706,16 @@ func serveDashboard(cfg config, stderr *os.File) int {
 		return 4
 	}
 
+	tokens, err := newBootstrapResponse()
+	if err != nil {
+		_ = listener.Close()
+		fmt.Fprintf(stderr, "server runtime failure: token generation failed: %s\n", err)
+		return 5
+	}
 	startedAt := time.Now()
 	actualAddr := listener.Addr().String()
 	server := &http.Server{
-		Handler: dashboardHandler(startedAt, actualAddr, cfg.readOnly.value),
+		Handler: dashboardHandler(startedAt, actualAddr, cfg.readOnly.value, tokens),
 	}
 
 	serverErr := make(chan error, 1)
@@ -741,8 +756,15 @@ func serveDashboard(cfg config, stderr *os.File) int {
 	}
 }
 
-func dashboardHandler(startedAt time.Time, bind string, readOnly bool) http.Handler {
+func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bootstrapResponse) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/bootstrap", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			writeUnknownRoute(writer)
+			return
+		}
+		writeJSON(writer, http.StatusOK, tokens)
+	})
 	mux.HandleFunc("/api/v1/status", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet {
 			writeUnknownRoute(writer)
@@ -795,7 +817,97 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool) http.Hand
 	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
 		writeUnknownRoute(writer)
 	})
-	return mux
+	return securityPolicyHandler(bind, mux)
+}
+
+func newBootstrapResponse() (bootstrapResponse, error) {
+	csrfToken, err := randomToken()
+	if err != nil {
+		return bootstrapResponse{}, err
+	}
+	webSocketToken, err := randomToken()
+	if err != nil {
+		return bootstrapResponse{}, err
+	}
+	return bootstrapResponse{
+		CSRFToken:      csrfToken,
+		WebSocketToken: webSocketToken,
+		StatusURL:      "/api/v1/status",
+	}, nil
+}
+
+func randomToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func securityPolicyHandler(bind string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if isCurrentAPIPath(request.URL.Path) {
+			if request.URL.Host != "" && !allowedServerHost(request.URL.Host, bind) {
+				writeForbidden(writer, "forbidden_absolute_url_host")
+				return
+			}
+			if !allowedServerHost(request.Host, bind) {
+				writeForbidden(writer, "forbidden_host")
+				return
+			}
+			if !allowedOrigin(request.Header.Get("Origin"), bind) {
+				writeForbidden(writer, "forbidden_origin")
+				return
+			}
+		}
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func isCurrentAPIPath(path string) bool {
+	return path == "/api/v1" || strings.HasPrefix(path, "/api/v1/")
+}
+
+func allowedOrigin(origin, bind string) bool {
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	return allowedServerHost(parsed.Host, bind)
+}
+
+func allowedServerHost(candidate, bind string) bool {
+	host, port, err := net.SplitHostPort(candidate)
+	if err != nil {
+		return false
+	}
+	_, bindPort, err := net.SplitHostPort(bind)
+	if err != nil || port != bindPort {
+		return false
+	}
+	return isLoopbackHost(host)
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func writeForbidden(writer http.ResponseWriter, code string) {
+	writeJSON(writer, http.StatusForbidden, errorEnvelope{
+		Error: apiError{
+			Code:      code,
+			Message:   "Request rejected by dashboard browser security policy",
+			Details:   map[string]any{},
+			RequestID: nil,
+		},
+	})
 }
 
 func writeUnknownRoute(writer http.ResponseWriter) {

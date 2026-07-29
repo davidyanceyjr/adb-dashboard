@@ -1,101 +1,192 @@
 # Active Cycle
 
-- Cycle ID: none
-- Mode: none
-- Goal: none
-- Roadmap slice: none
-- Branch or work context: Git repository on `main`; M1-S4 behavior commit is
-  `162e1e1d2ce49b373bf78b13f811a4f030e5ed66`.
-- Specification anchors: none
-- Acceptance criteria: none
-- Acceptance boundary: none
-- In scope: none
-- Out of scope: none
-- Focused test command: none
-- Real-path command or procedure: none
-- Broad verification commands: none
-- Current phase: inactive
+- Cycle ID: CYCLE-20260729-M1-S5
+- Mode: feature
+- Goal: Implement browser security bootstrap for current loopback API routes.
+- Roadmap slice: M1-S5 Browser Security Bootstrap
+- Branch or work context: Git repository on `main`, aligned with
+  `origin/main` and `origin/HEAD` at
+  `683172071ceadf1c9eeb096bbe490c42dba19449`; working tree had only prior
+  `.codex/plans/current.md` handoff metadata drift before this cycle state was
+  written.
+- Specification anchors: `CAP-008`, `CAP-009`, `INV-SEC-001`,
+  `INV-SEC-003`, `INV-SEC-004`, `INV-NIY-001-C`
+- Acceptance criteria: `AC-008-001`, `AC-008-002`, `AC-008-003`,
+  `AC-008-004`, `AC-009-004`
+- Acceptance boundary: HTTP request through production routing.
+- In scope: `GET /api/v1/bootstrap`; per-process `csrfToken` and
+  `webSocketToken`; host, absolute-form host, and Origin rejection for current
+  `/api/v1` routes; token non-disclosure in current status, diagnostics, and
+  visible surfaces available in this slice.
+- Out of scope: consuming tokens for future mutating requests; WebSocket
+  authorization; local-user authentication; browser UI rendering; ADB/device
+  behavior; request-correlation IDs beyond the documented `null` value.
+- Focused test command:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+- Real-path command or procedure: Build `./cmd/adb-dashboard` to an isolated
+  temporary path, start `serve --listen 127.0.0.1:0 --no-open`, request
+  `/api/v1/bootstrap` and `/api/v1/status` with accepted loopback headers,
+  restart and compare token values, then request current `/api/v1` routes with
+  rejected Host, absolute-form URL host, and Origin inputs.
+- Broad verification commands:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+- Current phase: ready
 - Blocker: none
-- Next phase: discover `M1-S5` when an implementation cycle is requested.
+- Next phase: commit when authorized; otherwise M1-S6 is next eligible.
 
-## Last Closed Cycle
+## Phase Results
+
+Phase: discover
+Result: DISCOVERY READY
+Evidence:
+- `git rev-parse HEAD origin/main origin/HEAD` returned
+  `683172071ceadf1c9eeb096bbe490c42dba19449` for all three refs.
+- `git status --porcelain=v1` showed only `.codex/plans/current.md` modified
+  before this cycle state rewrite.
+- `docs/roadmap.md` marks `M1-S5` accepted with one HTTP routing boundary,
+  expected red evidence, real-path exercise, scope, risks, stop conditions, and
+  binary exit gate.
+- `docs/SPECIFICATION.md` marks `CAP-008` implementation-ready with acceptance
+  criteria `AC-008-001` through `AC-008-004`.
+- Repository verification entry points discovered from `go.mod`, existing
+  tests, and prior cycle evidence.
+Changed:
+- `.codex/plans/current.md`
+Next: contract
+Blocker: none
+
+Phase: contract
+Result: CONTRACT READY
+Evidence:
+- Specification anchors: `CAP-008`, `CAP-009`, `INV-SEC-001`,
+  `INV-SEC-003`, `INV-SEC-004`, `INV-NIY-001-C`.
+- Acceptance criteria: `AC-008-001`, `AC-008-002`, `AC-008-003`,
+  `AC-008-004`, `AC-009-004`.
+- Acceptance boundary: HTTP request through production routing.
+- Expected red evidence: focused HTTP test reaches the running server and fails
+  because `/api/v1/bootstrap` is absent and host/origin rejection is not yet
+  enforced.
+Changed:
+- none
+Next: red
+Blocker: none
+
+Phase: red
+Result: RED CONFIRMED
+Evidence:
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+  exited `1`.
+- Failure reached the production HTTP boundary:
+  `TestM1S5BootstrapTokensAndSecurityPolicy` requested
+  `/api/v1/bootstrap` from the running server and observed HTTP `404` with
+  error code `not_found` instead of the documented bootstrap response.
+Changed:
+- `tests/cli/m1_s1_cli_test.go`
+Next: build
+Blocker: none
+
+Phase: build
+Result: BUILD APPLIED
+Evidence:
+- Production path added for per-process bootstrap token generation,
+  `/api/v1/bootstrap`, and security policy enforcement before current
+  `/api/v1` route handlers.
+- Review repair narrowed security policy matching to the actual `/api/v1`
+  route namespace.
+- Security rejection envelope repaired to match the accepted standard message
+  in `docs/SPECIFICATION.md`.
+- `gofmt -w cmd/adb-dashboard/main.go tests/cli/m1_s1_cli_test.go` exited
+  `0`.
+Changed:
+- `cmd/adb-dashboard/main.go`
+Next: green
+Blocker: none
+
+Phase: green
+Result: GREEN VERIFIED
+Evidence:
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+  exited `0`.
+- Real-path exercise built `./cmd/adb-dashboard` to an isolated temporary path,
+  started `serve --listen 127.0.0.1:0 --no-open`, requested
+  `/api/v1/bootstrap` with same-origin `Origin`, and observed token lengths
+  `csrf_len=43` and `websocket_len=43`.
+- Real-path `/api/v1/status` returned running status for
+  `127.0.0.1:44541` and did not disclose token field names or token values.
+- Real-path rejected foreign Host, foreign absolute-form URL host, and foreign
+  Origin requests with HTTP `403` and the documented error codes
+  `forbidden_host`, `forbidden_absolute_url_host`, and `forbidden_origin`.
+- Real-path restart started a second server at `127.0.0.1:45829`; both
+  `csrfToken` and `webSocketToken` changed after restart.
+- Real-path logs and forbidden responses did not disclose issued token values.
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
+  exited `0`.
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+  exited `0`.
+Changed:
+- `tests/cli/m1_s1_cli_test.go`
+- `cmd/adb-dashboard/main.go`
+Next: documentation
+Blocker: none
+
+Phase: documentation
+Result: DOCS SYNCED
+Evidence:
+- `rg -n "M1-S5|M1-S4|Status: verified|Next eligible|security|bootstrap|CAP-008" docs README.md .codex -g '*.md'`
+  found the accepted specification and roadmap as the behavior-facing docs.
+- `docs/SPECIFICATION.md` already defined the accepted `CAP-008` behavior and
+  standard security rejection envelope; no specification change was required.
+- `docs/roadmap.md` now marks `M1-S5` as `verified` and sets next eligible
+  slice to `M1-S6`.
+Changed:
+- `docs/roadmap.md`
+Next: review
+Blocker: none
+
+Phase: review
+Result: REVIEW PASSED
+Evidence:
+- Exactly one slice was attempted: `M1-S5` Browser Security Bootstrap.
+- `AC-008-001` is covered by `TestM1S5BootstrapTokensAndSecurityPolicy` and
+  real-path bootstrap evidence showing HTTP `200`, `application/json`,
+  URL-safe 43-character token values, independent token fields, and
+  `statusUrl` `/api/v1/status`.
+- `AC-008-002` is covered by focused host, absolute-form URL host, and Origin
+  rejection tests plus real-path `403` evidence for all three rejection modes.
+- `AC-008-003` is covered by focused restart checks and real-path restart
+  evidence showing both token values changed.
+- `AC-008-004` is covered by focused status non-disclosure checks and
+  real-path status/log/forbidden-response non-disclosure checks.
+- `git diff --check` exited `0`.
+- Final focused command
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+  exited `0`.
+- Final broad commands
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
+  and
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+  exited `0`.
+- Diff is limited to active cycle state, server/bootstrap/security behavior,
+  focused HTTP tests, and roadmap status; accidental M1-S1 roadmap churn and
+  unused test table field were repaired during review.
+- No placeholder success paths, test-only production hooks, new dependencies,
+  ADB/device behavior, WebSocket token consumption, or browser UI behavior were
+  added.
+Changed:
+- none
+Next: ready
+Blocker: none
 
 Phase: ready
 Result: CYCLE READY
 Evidence:
-- Cycle `CYCLE-20260729-M1-S4` implemented loopback server lifecycle and
-  current status API behavior for `adb-dashboard`, `adb-dashboard serve`, and
-  current `/api/v1` status/unknown routes.
-- Focused red evidence:
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
-  exited `1`; failures reached the process boundary because startup exited `6`
-  with `NIY: server.start is not implemented yet`, and listen failure paths
-  returned exit `6` instead of documented statuses.
-- Focused green evidence:
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
-  exited `0`.
-- Real-path evidence: built the real command to an isolated temporary path,
-  started `serve --listen 127.0.0.1:0 --no-open`, parsed
-  `INFO server started addr=127.0.0.1:35037`, requested `/api/v1/status` and
-  observed HTTP `200`, `application/json`, `server.bind`
-  `127.0.0.1:35037`, `server.readOnly false`, and `adb` `NIY` fields;
-  requested `/api/v1/unknown` and observed HTTP `404`, `application/json`, and
-  error `not_found` / `Unknown API route`; `SIGTERM` shutdown exited `0`,
-  stdout byte count was `0`, startup and shutdown diagnostics were written to
-  stderr, data and temp directories existed, and the ADB marker was absent.
-- Broad evidence:
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
-  exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
-  exited `0`.
-- Documentation evidence: `docs/roadmap.md` marks `M1-S4` as `verified` and
-  sets next eligible slice to `M1-S5`; `.codex/cycles/history.md` has a
-  compact row for `CYCLE-20260729-M1-S4`.
-- Review: REVIEW PASSED; scope remained limited to `M1-S4`; M1-S5 host/origin
-  security and bootstrap token behavior remains out of scope; no test-only
-  production hooks or placeholder success paths were added.
-- Version-control evidence: M1-S4 was committed as
-  `162e1e1d2ce49b373bf78b13f811a4f030e5ed66` and pushed to `origin/main`.
+- `CYCLE-20260729-M1-S5` reached `REVIEW PASSED`.
 Changed:
-- `.codex/plans/current.md`
 - `.codex/cycles/history.md`
+- `.codex/plans/current.md`
 - `cmd/adb-dashboard/main.go`
 - `docs/roadmap.md`
 - `tests/cli/m1_s1_cli_test.go`
-Next: `M1-S5`
+Next: commit when authorized; otherwise `M1-S6`.
 Blocker: none
-
-## Pause State
-
-- Current phase: inactive; next cycle not started.
-- Last valid result: `CYCLE-20260729-M1-S4` reached `CYCLE READY` and was
-  committed as `162e1e1d2ce49b373bf78b13f811a4f030e5ed66`.
-- Changed files:
-  - `.codex/plans/current.md`
-  - `.codex/cycles/history.md`
-  - `cmd/adb-dashboard/main.go`
-  - `docs/roadmap.md`
-  - `tests/cli/m1_s1_cli_test.go`
-- Commands run:
-  - `gofmt -w tests/cli/m1_s1_cli_test.go`
-  - `gofmt -w cmd/adb-dashboard/main.go tests/cli/m1_s1_cli_test.go`
-  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
-    exited `1` for red evidence, then exited `0` after implementation and
-    review repair.
-  - Real-path shell exercise built `./cmd/adb-dashboard` to a temporary path,
-    started loopback server, requested `/api/v1/status` and `/api/v1/unknown`,
-    terminated with `SIGTERM`, and exited `0`.
-  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
-    exited `0`.
-  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
-    exited `0`.
-- Passing:
-  - Focused process and HTTP lifecycle tests.
-  - Real-path status and unknown-route exercise with `SIGTERM` shutdown.
-  - Race tests.
-  - Vet.
-- Failing: none known for current working state.
-- Not run: PR, release, deployment.
-- Blocker: none.
-- Next phase: discover `M1-S5` when an implementation cycle is requested.
-- Do not touch: no unrelated user-created files were present at handoff
-  inspection.

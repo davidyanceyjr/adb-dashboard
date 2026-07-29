@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.0.0
 - Current milestone: M1
-- Next eligible slice: M1-S5
+- Next eligible slice: M1-S6
 - Last reviewed: 2026-07-29
 
 This roadmap selects implementation order for the accepted local bootstrap
@@ -265,7 +265,7 @@ Every implementation slice must:
 
 ### Slice M1-S5: Browser Security Bootstrap
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Issue per-process bootstrap tokens to same-origin loopback requests
   while backend policy rejects foreign host and origin requests before route
