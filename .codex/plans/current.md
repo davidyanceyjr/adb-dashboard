@@ -6,8 +6,8 @@
 - Roadmap slice: none
 - Branch or work context: Git repository on
   `agent/m1-s2-doctor-config`, tracking
-  `origin/agent/m1-s2-doctor-config`; M1-S2 behavior commit is
-  `a45785cabf6dd57c102c1b9bf7bce0fac334b578`.
+  `origin/agent/m1-s2-doctor-config`; M1-S3 changes are verified in the
+  working tree but not committed.
 - Specification anchors: none
 - Acceptance criteria: none
 - Acceptance boundary: none
@@ -18,82 +18,79 @@
 - Broad verification commands: none
 - Current phase: inactive
 - Blocker: none
-- Next phase: discover `M1-S3` when an implementation cycle is requested.
+- Next phase: discover `M1-S4` when an implementation cycle is requested.
 
 ## Last Closed Cycle
 
 Phase: ready
 Result: CYCLE READY
 Evidence:
-- Cycle `CYCLE-20260729-M1-S2` implemented `adb-dashboard doctor` successful
-  configuration precedence and startup-directory validation behavior.
+- Cycle `CYCLE-20260729-M1-S3` implemented configuration and startup
+  filesystem failure behavior for `doctor`, `serve`, and no-subcommand
+  startup.
 - Focused red evidence:
-  `GOCACHE=$PWD/.codex/cache/go-build GOMODCACHE=$PWD/.codex/cache/go-mod go test -count=1 ./...`
-  exited `1` because `adb-dashboard doctor` exited `6` with `NIY: doctor is
-  not implemented yet`.
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+  exited `1`; failures reached the real CLI boundary because invalid
+  listen/log values exited `0` with PASS doctor reports, wrong TOML type
+  emitted a parse diagnostic instead of `ERR-004-008`, and startup filesystem
+  failures returned `NIY: server.start is not implemented yet`.
 - Focused green evidence:
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
   exited `0`.
-- Real-path evidence: built the real command and ran `adb-dashboard doctor
-  --listen 127.0.0.1:4545 --temp-dir "$tmp/cli-temp" --read-only` with
-  isolated config, environment, fake `adb`, and fake `xdg-open`; command exited
-  `0`, stderr was empty, stdout reported `overall: PASS`, `source=mixed`,
-  selected data/temp directory PASS rows, and documented `NIY` rows; selected
-  data/temp directories existed; fake `adb` and `xdg-open` markers did not
-  exist.
+- Real-path evidence: built the real command to an isolated temporary path;
+  malformed explicit config with `doctor --config` exited `2`, wrote no stdout,
+  and wrote `invalid configuration: cannot parse ...` to stderr; `serve
+  --data-dir "$root/data-dir" --temp-dir "$root/temp-file" --open` exited `5`,
+  wrote no stdout, wrote `server runtime failure: startup filesystem
+  unavailable: temp directory ...` to stderr, left the earlier data directory in
+  place, and did not invoke fake `adb` or fake `xdg-open` markers.
 - Broad evidence:
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race ./...`
   exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
   exited `0`.
-- Documentation evidence: `docs/roadmap.md` marks `M1-S2` as `verified` and
-  sets next eligible slice to `M1-S3`; `.codex/cycles/history.md` has a
-  compact row for `CYCLE-20260729-M1-S2`.
-- Review: REVIEW PASSED; scope remained limited to `M1-S2`, the production
-  `doctor` placeholder was replaced, TOML config is decoded with
-  `github.com/BurntSushi/toml`, and commit
-  `a45785cabf6dd57c102c1b9bf7bce0fac334b578` was pushed to
-  `origin/agent/m1-s2-doctor-config`.
+- Documentation evidence: `docs/roadmap.md` marks `M1-S3` as `verified` and
+  sets next eligible slice to `M1-S4`; `.codex/cycles/history.md` has a
+  compact row for `CYCLE-20260729-M1-S3`.
+- Review: REVIEW PASSED; scope remained limited to `M1-S3`, the production
+  path still reports `NIY` for successful server startup, and no test-only
+  production hooks or placeholder success paths were added.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
 - `cmd/adb-dashboard/main.go`
 - `docs/roadmap.md`
-- `go.mod`
-- `go.sum`
 - `tests/cli/m1_s1_cli_test.go`
-Next: `M1-S3`
+Next: `M1-S4`
 Blocker: none
 
 ## Pause State
 
 - Current phase: inactive; next cycle not started.
-- Last valid result: `CYCLE-20260729-M1-S2` reached `CYCLE READY`, was
-  committed as `a45785cabf6dd57c102c1b9bf7bce0fac334b578`, and pushed to
-  `origin/agent/m1-s2-doctor-config`.
-- Changed files: none in working tree at handoff inspection.
+- Last valid result: `CYCLE-20260729-M1-S3` reached `CYCLE READY` in the
+  working tree and has not been committed.
+- Changed files:
+  - `.codex/plans/current.md`
+  - `.codex/cycles/history.md`
+  - `cmd/adb-dashboard/main.go`
+  - `docs/roadmap.md`
+  - `tests/cli/m1_s1_cli_test.go`
 - Commands run:
-  - `git status --short --branch` showed
-    `## agent/m1-s2-doctor-config...origin/agent/m1-s2-doctor-config`.
-  - `sed -n '1,140p' .codex/plans/current.md` read the active state.
-  - `sed -n '1,190p' docs/roadmap.md` confirmed next eligible slice `M1-S3`.
-  - `tail -n 8 .codex/cycles/history.md` confirmed M1-S1 and M1-S2 history
-    rows.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+    exited `1` for red evidence, then exited `0` after implementation.
+  - Real-path shell exercise built `./cmd/adb-dashboard` to a temporary path and
+    ran malformed-config `doctor` plus temp-file failure `serve`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race ./...`
+    exited `0`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+    exited `0`.
 - Passing:
-  - Prior M1-S2 focused evidence:
-    `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
-    exited `0`.
-  - Prior M1-S2 broad evidence:
-    `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race ./...`
-    exited `0`.
-  - Prior M1-S2 broad evidence:
-    `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
-    exited `0`.
+  - Focused process tests.
+  - Real-path malformed config and startup filesystem failure exercise.
+  - Race tests.
+  - Vet.
 - Failing: none known for current working state.
-- Not run: M1-S3 red tests and real-path failure exercises have not been run.
+- Not run: commit, push, PR, and release were not run.
 - Blocker: none.
-- Next phase: discover `M1-S3` with `$implementation-cycle`; confirm contract
-  anchors `CAP-004`, `CAP-005`, `CAP-006`, `AC-004-003` through
-  `AC-004-006`, `AC-005-003` through `AC-005-005`, `AC-006-002`,
-  `AC-006-003`, and `ERR-004-001` through `ERR-004-010`.
-- Do not touch: no unrelated user-created files were present at handoff
-  inspection.
+- Next phase: commit or hand off `M1-S3`, or discover `M1-S4` after the
+  current changes are committed or intentionally left for review.
+- Do not touch: no unrelated user-created files were present at cycle closure.

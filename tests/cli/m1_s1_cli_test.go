@@ -219,6 +219,305 @@ level = "trace"
 	assertNoFutureStateOrExternalSideEffects(t, env)
 }
 
+func TestM1S3ConfigurationFailuresExitBeforeReportOrStartup(t *testing.T) {
+	binary := buildDashboard(t)
+
+	tests := []struct {
+		name       string
+		command    []string
+		envConfig  bool
+		envMutate  func([]string) []string
+		configBody string
+		wantStderr func(configPath string) string
+	}{
+		{
+			name:    "missing_explicit_cli_config",
+			command: []string{"doctor"},
+			wantStderr: func(configPath string) string {
+				return "invalid configuration: cannot load " + configPath + ": "
+			},
+		},
+		{
+			name:      "missing_explicit_env_config",
+			command:   []string{"doctor"},
+			envConfig: true,
+			wantStderr: func(configPath string) string {
+				return "invalid configuration: cannot load " + configPath + ": "
+			},
+		},
+		{
+			name:       "malformed_toml",
+			command:    []string{"doctor"},
+			configBody: "[server\nlisten = \"127.0.0.1:8080\"\n",
+			wantStderr: func(configPath string) string {
+				return "invalid configuration: cannot parse " + configPath + ": "
+			},
+		},
+		{
+			name:       "unknown_key",
+			command:    []string{"doctor"},
+			configBody: "[server]\nunknown = true\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: unknown key server.unknown\n"
+			},
+		},
+		{
+			name:       "listen_not_host_port",
+			command:    []string{"doctor"},
+			configBody: "[server]\nlisten = \"127.0.0.1\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: server.listen must be HOST:PORT\n"
+			},
+		},
+		{
+			name:       "listen_empty_host",
+			command:    []string{"doctor"},
+			configBody: "[server]\nlisten = \":8080\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: server.listen host must not be empty\n"
+			},
+		},
+		{
+			name:       "listen_non_integer_port",
+			command:    []string{"doctor"},
+			configBody: "[server]\nlisten = \"127.0.0.1:nope\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: server.listen port must be 0 through 65535: nope\n"
+			},
+		},
+		{
+			name:       "listen_out_of_range_port",
+			command:    []string{"doctor"},
+			configBody: "[server]\nlisten = \"127.0.0.1:70000\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: server.listen port must be 0 through 65535: 70000\n"
+			},
+		},
+		{
+			name:       "invalid_log_level",
+			command:    []string{"doctor"},
+			configBody: "[logging]\nlevel = \"verbose\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: logging.level must be one of error, warn, info, debug, trace: verbose\n"
+			},
+		},
+		{
+			name:       "wrong_type",
+			command:    []string{"doctor"},
+			configBody: "[server]\nread_only = \"yes\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: server.read_only must be bool\n"
+			},
+		},
+		{
+			name:       "unsupported_path_expansion",
+			command:    []string{"doctor"},
+			configBody: "[server]\ndata_dir = \"~bad\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: server.data_dir contains unsupported path expansion: ~bad\n"
+			},
+		},
+		{
+			name:       "unset_path_environment",
+			command:    []string{"doctor"},
+			configBody: "[server]\ndata_dir = \"$ADB_DASHBOARD_MISSING/path\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: server.data_dir references unset environment variable: ADB_DASHBOARD_MISSING\n"
+			},
+		},
+		{
+			name:       "serve_invalid_config",
+			command:    []string{"serve"},
+			configBody: "[logging]\nlevel = \"verbose\"\n",
+			wantStderr: func(string) string {
+				return "invalid configuration: logging.level must be one of error, warn, info, debug, trace: verbose\n"
+			},
+		},
+		{
+			name:    "cli_invalid_listen",
+			command: []string{"doctor", "--listen", "127.0.0.1"},
+			wantStderr: func(string) string {
+				return "invalid configuration: server.listen must be HOST:PORT\n"
+			},
+		},
+		{
+			name:    "env_invalid_log_level",
+			command: []string{"doctor"},
+			envMutate: func(env []string) []string {
+				return setEnv(env, "ADB_DASHBOARD_LOG_LEVEL", "verbose")
+			},
+			wantStderr: func(string) string {
+				return "invalid configuration: logging.level must be one of error, warn, info, debug, trace: verbose\n"
+			},
+		},
+		{
+			name:    "default_home_fallback_unset",
+			command: []string{"doctor"},
+			envMutate: func(env []string) []string {
+				env = setEnv(env, "HOME", "")
+				return setEnv(env, "XDG_STATE_HOME", "")
+			},
+			wantStderr: func(string) string {
+				return "invalid configuration: server.data_dir references unset environment variable: HOME\n"
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := isolatedEnv(t)
+			values := envMap(env)
+			configPath := filepath.Join(values["HOME"], test.name+".toml")
+			args := append([]string{}, test.command...)
+			if test.envMutate != nil {
+				env = test.envMutate(env)
+			}
+			if test.configBody != "" {
+				writeFile(t, configPath, test.configBody)
+			}
+			if test.envConfig {
+				env = setEnv(env, "ADB_DASHBOARD_CONFIG", configPath)
+			} else if test.configBody != "" || test.name == "missing_explicit_cli_config" {
+				args = append(args, "--config", configPath)
+			}
+
+			result := runDashboard(t, binary, env, args...)
+
+			if result.code != 2 {
+				t.Fatalf("exit status = %d, want 2; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+			}
+			if result.stdout != "" {
+				t.Fatalf("stdout = %q, want empty", result.stdout)
+			}
+			want := test.wantStderr(configPath)
+			if strings.HasSuffix(want, ": ") {
+				if !strings.HasPrefix(result.stderr, want) {
+					t.Fatalf("stderr = %q, want prefix %q", result.stderr, want)
+				}
+			} else if result.stderr != want {
+				t.Fatalf("stderr = %q, want %q", result.stderr, want)
+			}
+			assertNoForbiddenSideEffects(t, env)
+		})
+	}
+}
+
+func TestM1S3DoctorReportsStartupDirectoryFailures(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+
+	dataFile := filepath.Join(values["HOME"], "data-file")
+	tempDir := filepath.Join(values["HOME"], "temp-dir")
+	writeFile(t, dataFile, "not a directory\n")
+
+	result := runDashboard(t, binary, env,
+		"doctor",
+		"--data-dir", dataFile,
+		"--temp-dir", tempDir,
+	)
+
+	if result.code != 5 {
+		t.Fatalf("exit status = %d, want 5; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("stderr = %q, want empty", result.stderr)
+	}
+	wantContains := []string{
+		"adb-dashboard doctor\n",
+		"overall: FAIL\n",
+		"config: PASS source=mixed listen=127.0.0.1:8080 readOnly=false logLevel=info\n",
+		"dataDir: FAIL path=" + dataFile + " error=",
+		"tempDir: PASS path=" + tempDir + "\n",
+		"cacheDir: NIY storage.cache is not implemented yet\n",
+		"hostTools: NIY hosttools.discovery is not implemented yet\n",
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("doctor stdout missing %q\nstdout:\n%s", want, result.stdout)
+		}
+	}
+	assertDirExists(t, tempDir)
+	assertNoFutureStateOrExternalSideEffects(t, env)
+}
+
+func TestM1S3StartupDirectoryFailuresExitBeforeServerSideEffects(t *testing.T) {
+	binary := buildDashboard(t)
+
+	tests := []struct {
+		name        string
+		args        []string
+		configure   func(t *testing.T, env []string) (nextEnv []string, dataDir string, tempDir string)
+		wantKind    string
+		wantPath    func(dataDir, tempDir string) string
+		wantCreated func(dataDir, tempDir string) string
+	}{
+		{
+			name: "serve_data_path_is_file",
+			args: []string{"serve"},
+			configure: func(t *testing.T, env []string) ([]string, string, string) {
+				values := envMap(env)
+				dataFile := filepath.Join(values["HOME"], "data-file")
+				tempDir := filepath.Join(values["HOME"], "temp-dir")
+				writeFile(t, dataFile, "not a directory\n")
+				return env, dataFile, tempDir
+			},
+			wantKind: "data",
+			wantPath: func(dataDir, tempDir string) string {
+				return dataDir
+			},
+		},
+		{
+			name: "no_subcommand_temp_path_is_file_after_data_created",
+			args: nil,
+			configure: func(t *testing.T, env []string) ([]string, string, string) {
+				values := envMap(env)
+				dataDir := filepath.Join(values["HOME"], "data-dir")
+				tempFile := filepath.Join(values["HOME"], "temp-file")
+				writeFile(t, tempFile, "not a directory\n")
+				env = setEnv(env, "ADB_DASHBOARD_DATA_DIR", dataDir)
+				env = setEnv(env, "ADB_DASHBOARD_TEMP_DIR", tempFile)
+				return env, dataDir, tempFile
+			},
+			wantKind: "temp",
+			wantPath: func(dataDir, tempDir string) string {
+				return tempDir
+			},
+			wantCreated: func(dataDir, tempDir string) string {
+				return dataDir
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := isolatedEnv(t)
+			env, dataDir, tempDir := test.configure(t, env)
+			args := append([]string{}, test.args...)
+			if len(args) > 0 {
+				args = append(args, "--data-dir", dataDir, "--temp-dir", tempDir, "--open")
+			}
+
+			result := runDashboard(t, binary, env, args...)
+
+			if result.code != 5 {
+				t.Fatalf("exit status = %d, want 5; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+			}
+			if result.stdout != "" {
+				t.Fatalf("stdout = %q, want empty", result.stdout)
+			}
+			wantPrefix := "server runtime failure: startup filesystem unavailable: " + test.wantKind + " directory " + test.wantPath(dataDir, tempDir) + ": "
+			if !strings.HasPrefix(result.stderr, wantPrefix) {
+				t.Fatalf("stderr = %q, want prefix %q", result.stderr, wantPrefix)
+			}
+			if test.wantCreated != nil {
+				assertDirExists(t, test.wantCreated(dataDir, tempDir))
+			}
+			assertNoFutureStateOrExternalSideEffects(t, env)
+		})
+	}
+}
+
 func buildDashboard(t *testing.T) string {
 	t.Helper()
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -47,8 +49,7 @@ func main() {
 
 func run(args []string, stdout, stderr *os.File) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "NIY: server.start is not implemented yet")
-		return 6
+		return runStartup(nil, stderr)
 	}
 
 	first := args[0]
@@ -60,7 +61,7 @@ func run(args []string, stdout, stderr *os.File) int {
 		printVersion(stdout)
 		return 0
 	case "serve":
-		return validateServe(args[1:], stderr)
+		return runStartup(args[1:], stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
 	default:
@@ -112,19 +113,6 @@ type cliOptions struct {
 	open       *bool
 }
 
-type fileConfig struct {
-	Server struct {
-		Listen      *string `toml:"listen"`
-		OpenBrowser *bool   `toml:"open_browser"`
-		ReadOnly    *bool   `toml:"read_only"`
-		DataDir     *string `toml:"data_dir"`
-		TempDir     *string `toml:"temp_dir"`
-	} `toml:"server"`
-	Logging struct {
-		Level *string `toml:"level"`
-	} `toml:"logging"`
-}
-
 func runDoctor(args []string, stdout, stderr *os.File) int {
 	options, code := parseOptions(args, stderr)
 	if code != 0 {
@@ -137,11 +125,11 @@ func runDoctor(args []string, stdout, stderr *os.File) int {
 		return 2
 	}
 
-	dataOK, dataErr := ensureDir(cfg.dataDir.value)
-	tempOK, tempErr := ensureDir(cfg.tempDir.value)
+	dataErr := ensureDir(cfg.dataDir.value)
+	tempErr := ensureDir(cfg.tempDir.value)
 	overall := "PASS"
 	exitCode := 0
-	if !dataOK || !tempOK {
+	if dataErr != nil || tempErr != nil {
 		overall = "FAIL"
 		exitCode = 5
 	}
@@ -149,8 +137,8 @@ func runDoctor(args []string, stdout, stderr *os.File) int {
 	fmt.Fprintln(stdout, "adb-dashboard doctor")
 	fmt.Fprintf(stdout, "overall: %s\n", overall)
 	fmt.Fprintf(stdout, "config: PASS source=%s listen=%s readOnly=%t logLevel=%s\n", reportSource(cfg), cfg.listen.value, cfg.readOnly.value, cfg.logLevel.value)
-	printDirRow(stdout, "dataDir", cfg.dataDir.value, dataOK, dataErr)
-	printDirRow(stdout, "tempDir", cfg.tempDir.value, tempOK, tempErr)
+	printDirRow(stdout, "dataDir", cfg.dataDir.value, dataErr)
+	printDirRow(stdout, "tempDir", cfg.tempDir.value, tempErr)
 	fmt.Fprintln(stdout, "cacheDir: NIY storage.cache is not implemented yet")
 	fmt.Fprintln(stdout, "projectDir: NIY storage.projects is not implemented yet")
 	fmt.Fprintln(stdout, "adbExecutable: NIY adb.discovery is not implemented yet")
@@ -159,6 +147,26 @@ func runDoctor(args []string, stdout, stderr *os.File) int {
 	fmt.Fprintln(stdout, "devices: NIY devices.refresh is not implemented yet")
 	fmt.Fprintln(stdout, "hostTools: NIY hosttools.discovery is not implemented yet")
 	return exitCode
+}
+
+func runStartup(args []string, stderr *os.File) int {
+	options, code := parseOptions(args, stderr)
+	if code != 0 {
+		return code
+	}
+
+	cfg, err := resolveConfig(options)
+	if err != nil {
+		fmt.Fprintln(stderr, err.Error())
+		return 2
+	}
+	if failure := ensureStartupDirs(cfg); failure != nil {
+		fmt.Fprintf(stderr, "server runtime failure: startup filesystem unavailable: %s directory %s: %s\n", failure.kind, failure.path, failure.err)
+		return 5
+	}
+
+	fmt.Fprintln(stderr, "NIY: server.start is not implemented yet")
+	return 6
 }
 
 func parseOptions(args []string, stderr *os.File) (cliOptions, int) {
@@ -251,33 +259,85 @@ func applyConfigFile(cfg *config, path string) error {
 		return fmt.Errorf("invalid configuration: cannot load %s: %v", path, err)
 	}
 
-	var parsed fileConfig
-	metadata, err := toml.Decode(string(content), &parsed)
-	if err != nil {
+	var parsed map[string]interface{}
+	if _, err := toml.Decode(string(content), &parsed); err != nil {
 		return fmt.Errorf("invalid configuration: cannot parse %s: %v", path, err)
-	}
-	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
-		return fmt.Errorf("invalid configuration: unknown key %s", strings.Join(undecoded[0], "."))
 	}
 
 	source := "file:" + path
-	if parsed.Server.Listen != nil {
-		cfg.listen = sourcedString{value: *parsed.Server.Listen, source: source}
+	for section, sectionValue := range parsed {
+		values, ok := sectionValue.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid configuration: %s must be table", section)
+		}
+		switch section {
+		case "server":
+			if err := applyServerConfig(cfg, values, source); err != nil {
+				return err
+			}
+		case "logging":
+			if err := applyLoggingConfig(cfg, values, source); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("invalid configuration: unknown key %s", section)
+		}
 	}
-	if parsed.Server.OpenBrowser != nil {
-		cfg.openBrowser = sourcedBool{value: *parsed.Server.OpenBrowser, source: source}
+	return nil
+}
+
+func applyServerConfig(cfg *config, values map[string]interface{}, source string) error {
+	for key, value := range values {
+		switch key {
+		case "listen":
+			text, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid configuration: server.listen must be string")
+			}
+			cfg.listen = sourcedString{value: text, source: source}
+		case "open_browser":
+			flag, ok := value.(bool)
+			if !ok {
+				return fmt.Errorf("invalid configuration: server.open_browser must be bool")
+			}
+			cfg.openBrowser = sourcedBool{value: flag, source: source}
+		case "read_only":
+			flag, ok := value.(bool)
+			if !ok {
+				return fmt.Errorf("invalid configuration: server.read_only must be bool")
+			}
+			cfg.readOnly = sourcedBool{value: flag, source: source}
+		case "data_dir":
+			text, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid configuration: server.data_dir must be string")
+			}
+			cfg.dataDir = sourcedString{value: text, source: source}
+		case "temp_dir":
+			text, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid configuration: server.temp_dir must be string")
+			}
+			cfg.tempDir = sourcedString{value: text, source: source}
+		default:
+			return fmt.Errorf("invalid configuration: unknown key server.%s", key)
+		}
 	}
-	if parsed.Server.ReadOnly != nil {
-		cfg.readOnly = sourcedBool{value: *parsed.Server.ReadOnly, source: source}
-	}
-	if parsed.Server.DataDir != nil {
-		cfg.dataDir = sourcedString{value: *parsed.Server.DataDir, source: source}
-	}
-	if parsed.Server.TempDir != nil {
-		cfg.tempDir = sourcedString{value: *parsed.Server.TempDir, source: source}
-	}
-	if parsed.Logging.Level != nil {
-		cfg.logLevel = sourcedString{value: *parsed.Logging.Level, source: source}
+	return nil
+}
+
+func applyLoggingConfig(cfg *config, values map[string]interface{}, source string) error {
+	for key, value := range values {
+		switch key {
+		case "level":
+			text, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("invalid configuration: logging.level must be string")
+			}
+			cfg.logLevel = sourcedString{value: text, source: source}
+		default:
+			return fmt.Errorf("invalid configuration: unknown key logging.%s", key)
+		}
 	}
 	return nil
 }
@@ -319,6 +379,13 @@ func applyCLI(cfg *config, options cliOptions) {
 }
 
 func finalizeConfig(cfg *config) error {
+	if err := validateListen(cfg.listen.value); err != nil {
+		return err
+	}
+	if err := validateLogLevel(cfg.logLevel.value); err != nil {
+		return err
+	}
+
 	var err error
 	cfg.dataDir.value, err = expandPath("server.data_dir", cfg.dataDir.value)
 	if err != nil {
@@ -329,6 +396,30 @@ func finalizeConfig(cfg *config) error {
 		return err
 	}
 	return nil
+}
+
+func validateListen(value string) error {
+	host, portText, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf("invalid configuration: server.listen must be HOST:PORT")
+	}
+	if host == "" {
+		return fmt.Errorf("invalid configuration: server.listen host must not be empty")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 0 || port > 65535 {
+		return fmt.Errorf("invalid configuration: server.listen port must be 0 through 65535: %s", portText)
+	}
+	return nil
+}
+
+func validateLogLevel(value string) error {
+	switch value {
+	case "error", "warn", "info", "debug", "trace":
+		return nil
+	default:
+		return fmt.Errorf("invalid configuration: logging.level must be one of error, warn, info, debug, trace: %s", value)
+	}
 }
 
 func expandPath(key, value string) (string, error) {
@@ -422,7 +513,7 @@ func defaultDataDir() string {
 	if value := os.Getenv("XDG_STATE_HOME"); value != "" {
 		return filepath.Join(value, "adb-dashboard")
 	}
-	return filepath.Join(os.Getenv("HOME"), ".local", "state", "adb-dashboard")
+	return "$HOME/.local/state/adb-dashboard"
 }
 
 func defaultTempDir() string {
@@ -436,27 +527,42 @@ func defaultTempDir() string {
 	return filepath.Join(base, fmt.Sprintf("adb-dashboard-%d", os.Getuid()))
 }
 
-func ensureDir(path string) (bool, error) {
+type startupDirFailure struct {
+	kind string
+	path string
+	err  error
+}
+
+func ensureStartupDirs(cfg config) *startupDirFailure {
+	if err := ensureDir(cfg.dataDir.value); err != nil {
+		return &startupDirFailure{kind: "data", path: cfg.dataDir.value, err: err}
+	}
+	if err := ensureDir(cfg.tempDir.value); err != nil {
+		return &startupDirFailure{kind: "temp", path: cfg.tempDir.value, err: err}
+	}
+	return nil
+}
+
+func ensureDir(path string) error {
 	if err := os.MkdirAll(path, 0o755); err != nil {
-		return false, err
+		return err
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return false, err
+		return err
 	}
-	return info.IsDir(), nil
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+	return nil
 }
 
-func printDirRow(stdout *os.File, name, path string, ok bool, err error) {
-	if ok {
+func printDirRow(stdout *os.File, name, path string, err error) {
+	if err == nil {
 		fmt.Fprintf(stdout, "%s: PASS path=%s\n", name, path)
 		return
 	}
-	detail := "not a directory"
-	if err != nil {
-		detail = err.Error()
-	}
-	fmt.Fprintf(stdout, "%s: FAIL path=%s error=%s\n", name, path, detail)
+	fmt.Fprintf(stdout, "%s: FAIL path=%s error=%s\n", name, path, err.Error())
 }
 
 func reportSource(cfg config) string {
@@ -477,53 +583,7 @@ func reportSource(cfg config) string {
 }
 
 func validateGlobalOption(args []string, stderr *os.File) int {
-	for i := 0; i < len(args); i++ {
-		option := args[i]
-		switch option {
-		case "--listen", "--data-dir", "--config", "--temp-dir", "--log-level":
-			if i+1 >= len(args) {
-				fmt.Fprintf(stderr, "missing argument for %s\n", option)
-				return 2
-			}
-			i++
-		case "--open", "--no-open", "--read-only":
-		default:
-			if strings.HasPrefix(option, "--") {
-				fmt.Fprintf(stderr, "unknown option: %s\n", option)
-				return 2
-			}
-			fmt.Fprintf(stderr, "unknown command: %s\n", option)
-			return 2
-		}
-	}
-
-	fmt.Fprintln(stderr, "NIY: server.start is not implemented yet")
-	return 6
-}
-
-func validateServe(args []string, stderr *os.File) int {
-	for i := 0; i < len(args); i++ {
-		option := args[i]
-		switch option {
-		case "--listen", "--data-dir", "--config", "--temp-dir", "--log-level":
-			if i+1 >= len(args) {
-				fmt.Fprintf(stderr, "missing argument for %s\n", option)
-				return 2
-			}
-			i++
-		case "--open", "--no-open", "--read-only":
-		default:
-			if strings.HasPrefix(option, "--") {
-				fmt.Fprintf(stderr, "unknown option: %s\n", option)
-				return 2
-			}
-			fmt.Fprintf(stderr, "unknown command: %s\n", option)
-			return 2
-		}
-	}
-
-	fmt.Fprintln(stderr, "NIY: server.start is not implemented yet")
-	return 6
+	return runStartup(args, stderr)
 }
 
 func printVersion(stdout *os.File) {
