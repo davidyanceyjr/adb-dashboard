@@ -1,108 +1,262 @@
 # Active Cycle
 
-- Cycle ID: CYCLE-20260729-M2-ROADMAP
-- Mode: documentation
-- Goal: Create the next accepted roadmap stage for read-only ADB discovery.
-- Roadmap slice: documentation-only specification and roadmap update
-- Branch or work context: Git repository on branch `agent/add-m2-adb-roadmap`,
-  created from `main` at
-  `c51444d3322d0e0fbfa898282bbc1589d3ef22a8`; working tree edits are limited
-  to commit bookkeeping after documentation commit
-  `108d6b44b7f185756799d69397a0b81bfc3ca39c`.
-- Specification anchors: `CAP-010`, `CAP-011`, `CAP-012`, `AC-010-001`
-  through `AC-010-005`, `AC-011-001` through `AC-011-005`, `AC-012-001`
-  through `AC-012-004`, `INV-DATA-003`
-- Acceptance criteria: documentation acceptance, no production behavior claim
-- Acceptance boundary: accepted specification text and accepted roadmap slices
-  audited against `docs/SPECIFICATION_GUIDE.md`, `docs/ROADMAP_GUIDE.md`, and
-  `docs/READINESS_CHECKLIST.md`
-- In scope: Expand the accepted specification from local bootstrap to read-only
-  ADB discovery and device inventory; add accepted M2 roadmap slices with exact
-  contract references, boundaries, evidence, scope, risks, stop conditions, and
-  binary exit gates.
-- Out of scope: Production code, tests, commits, mutating ADB behavior,
-  interactive device sessions, WebSockets, file transfer, screenshots, logcat,
-  package workflows, host-tool execution, persistence, packaging, release, and
-  deployment.
-- Focused test command: `not applicable; documentation-only cycle`
-- Real-path command or procedure: `not applicable; documentation-only cycle`
-- Broad verification commands: `git diff --check`; stale-contract search with
-  `rg`
-- Current phase: committed
+- Cycle ID: CYCLE-20260729-M2-S1
+- Mode: feature
+- Goal: Implement doctor ADB executable and version discovery.
+- Roadmap slice: `M2-S1: Doctor ADB Executable And Version Discovery`
+- Branch or work context: Git repository on branch
+  `agent/add-m2-adb-roadmap` at `51c83cd`; upstream tracking is
+  `origin/agent/add-m2-adb-roadmap`. Working tree was clean before this
+  handoff update.
+- Specification anchors: `CAP-006`, `CAP-010`, `AC-006-001`,
+  `AC-010-001`, `AC-010-002`, `AC-010-003`, `INV-DATA-003`
+- Acceptance criteria: `AC-006-001`, `AC-010-001`, `AC-010-002`,
+  `AC-010-003`
+- Acceptance boundary: CLI process invocation with isolated `PATH` and fake
+  `adb` executables.
+- In scope: resolve `adb` from the process `PATH`; invoke only `adb version`
+  with an argument vector; parse the first non-empty stdout line as the display
+  version; report doctor ADB executable, version, unavailable, and failure
+  rows; return exit status `3` for ADB discovery or version failure when no
+  higher-priority failure is present; cover timeout and nonzero status behavior.
+- Out of scope: `/api/v1/status` ADB fields, `/api/v1/devices`, browser device
+  rendering, explicit ADB server controls, `adb devices`, shell, logcat,
+  install, file transfer, screenshots, device selection, device mutation,
+  host-tool execution, persistence, packaging, release, and deployment.
+- Focused test command:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S1DoctorADB'`
+- Real-path command or procedure: build or invoke the real `adb-dashboard`
+  command, run `adb-dashboard doctor` with a temporary fake `adb` that
+  succeeds, with a `PATH` containing no `adb`, and with a fake `adb version`
+  failure; inspect stdout, stderr, exit status, and fake-command invocation
+  logs.
+- Broad verification commands:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`;
+  `git diff --check`
+- Current phase: ready
 - Blocker: none
-- Next phase: open draft PR, or run `M2-S1` after the roadmap is accepted on
-  the target branch.
+- Next phase: ready for commit or handoff; no next implementation slice
+  selected.
 
 ## Phase Results
+
+Phase: handoff
+Result: HANDOFF READY
+Evidence:
+- `git status --short --branch` returned
+  `## agent/add-m2-adb-roadmap...origin/agent/add-m2-adb-roadmap` before this
+  handoff update.
+- `git log --oneline --decorate --max-count=8` showed `HEAD` at `51c83cd`
+  (`docs: record m2 roadmap commit`) on `agent/add-m2-adb-roadmap`, with
+  `origin/main` and `main` at `c51444d`.
+- `.codex/cycles/history.md` records `M1-S1` through `M1-S6` committed and
+  records `CYCLE-20260729-M2-ROADMAP` committed.
+- Prior roadmap review accepted `M2-S1` through `M2-S4`, found no blocking
+  gaps, and left `docs/roadmap.md` with `Next eligible slice: M2-S1`.
+- `docs/roadmap.md` defines `M2-S1` as an accepted feature slice with CLI
+  process invocation as the primary acceptance boundary and fake ADB fixtures
+  for deterministic red and green evidence.
+- Source inspection found current production doctor output in
+  `cmd/adb-dashboard/main.go` still reports static ADB `NIY` rows, matching
+  the expected red condition for `M2-S1`.
+Changed:
+- `.codex/plans/current.md`
+Next: resume with `$implementation-cycle` discovery for `M2-S1`
+Blocker: none
+
+Phase: resume
+Result: RESUME READY
+Evidence:
+- `git status --short --branch` returned
+  `## agent/add-m2-adb-roadmap...origin/agent/add-m2-adb-roadmap` and
+  ` M .codex/plans/current.md`; the only dirty file was the handoff state.
+- `git log --oneline -5 --decorate` showed `HEAD` at `51c83cd`
+  (`docs: record m2 roadmap commit`), matching the active handoff context.
+- `git diff -- .codex/plans/current.md` showed only the handoff transition
+  from completed `CYCLE-20260729-M2-ROADMAP` to `CYCLE-20260729-M2-S1`.
+Changed:
+- none
+Next: discovery
+Blocker: none
 
 Phase: discover
 Result: DISCOVERY READY
 Evidence:
-- `docs/roadmap.md` was accepted at version `1.0.0` with `Next eligible slice:
-  none for accepted M1 roadmap`.
-- `.codex/cycles/history.md` shows `M1-S1` through `M1-S6` committed.
-- `docs/SPECIFICATION.md` version `1.0.0` kept ADB/device behavior out of
-  scope until later accepted capabilities.
-- `git rev-parse --abbrev-ref HEAD && git rev-parse HEAD` returned `main` and
-  `c51444d3322d0e0fbfa898282bbc1589d3ef22a8`.
+- Applicable instructions read from root `AGENTS.md`, active cycle state,
+  `docs/SPECIFICATION.md`, `docs/roadmap.md`,
+  `docs/IMPLEMENTATION_CYCLE_GUIDE.md`, `docs/SPECIFICATION_GUIDE.md`,
+  `docs/ROADMAP_GUIDE.md`, and `docs/READINESS_CHECKLIST.md`.
+- `rg --files -g 'AGENTS.md' -g 'go.mod' -g 'Makefile' -g '.github/**' -g 'README.md'`
+  returned `AGENTS.md`, `README.md`, and `go.mod`; no nested `AGENTS.md`,
+  Makefile, or CI workflow file was present.
+- `docs/roadmap.md` defines accepted slice `M2-S1` with CLI process invocation
+  as the primary boundary and fake `adb` fixtures as deterministic evidence.
+- `go.mod` defines Go module `adb-dashboard` and existing tests build the real
+  `./cmd/adb-dashboard` binary from `tests/cli`.
+- Focused command resolved to
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S1DoctorADB'`.
 Changed:
-- none
-Next: document
+- `.codex/plans/current.md`
+Next: contract
 Blocker: none
 
-Phase: document
-Result: SPECIFICATION AND ROADMAP ACCEPTED
+Phase: contract
+Result: CONTRACT READY
 Evidence:
-- `docs/SPECIFICATION.md` now has specification version `1.1.0`, keeps contract
-  status `Accepted`, and adds implementation-ready `CAP-010`, `CAP-011`, and
-  `CAP-012` for read-only ADB executable/version discovery, `/api/v1/devices`,
-  and browser ADB/device inventory rendering.
-- `docs/SPECIFICATION.md` defines stable acceptance criteria `AC-010-001`
-  through `AC-010-005`, `AC-011-001` through `AC-011-005`, and `AC-012-001`
-  through `AC-012-004`.
-- `docs/roadmap.md` now has roadmap version `1.1.0`, keeps roadmap status
-  `Accepted`, sets `Current milestone: M2`, and sets `Next eligible slice:
-  M2-S1`.
-- `docs/roadmap.md` adds accepted vertical slices `M2-S1` through `M2-S4` with
-  exact specification references, primary boundaries, red evidence, focused
-  verification discovery rules, real-path exercises, broad verification, scope,
-  risks, stop conditions, documentation sync, and binary exit gates.
+- Specification anchors `CAP-006`, `CAP-010`, `AC-006-001`,
+  `AC-010-001`, `AC-010-002`, `AC-010-003`, and `INV-DATA-003` are accepted
+  and define doctor ADB rows, exit status `0` or `3`, timeout, and forbidden
+  side effects.
+- Acceptance boundary is the real CLI process invoked with isolated `PATH` and
+  fake `adb` executables.
+- Expected red evidence is a focused process test failing because current
+  production `doctor` output still reports static `NIY` ADB rows and does not
+  invoke `adb version`.
+Changed:
+- none
+Next: red
+Blocker: none
+
+Phase: design
+Result: DESIGN NOT REQUIRED
+Evidence:
+- Existing production location `cmd/adb-dashboard/main.go` already owns
+  `doctor`, path lookup can use Go `os/exec` without shell interpolation, and
+  existing process tests provide the correct boundary.
+Changed:
+- none
+Next: red
+Blocker: none
+
+Phase: red
+Result: RED CONFIRMED
+Evidence:
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S1DoctorADB'`
+  exited `1`.
+- `TestM2S1DoctorADBVersionDiscoverySuccess` reached the real
+  `adb-dashboard doctor` process boundary and failed because stdout contained
+  `adbExecutable: NIY adb.discovery is not implemented yet` and
+  `adbVersion: NIY adb.discovery is not implemented yet` instead of `PASS`
+  rows.
+- `TestM2S1DoctorADBUnavailableExitsThree` and
+  `TestM2S1DoctorADBVersionFailuresExitThree` reached the same boundary and
+  failed because exit status was `0`, not `3`, and the ADB rows remained static
+  `NIY`.
+Changed:
+- `tests/cli/m1_s1_cli_test.go`
+Next: build
+Blocker: none
+
+Phase: build
+Result: BUILD APPLIED
+Evidence:
+- Production `doctor` path now resolves `adb` from process `PATH`, invokes the
+  resolved executable with argument vector `["version"]`, parses the first
+  non-empty stdout line, reports documented ADB rows, and returns exit status
+  `3` for ADB discovery/version failures unless filesystem failure already set
+  status `5`.
+- Development command
+  `gofmt -w cmd/adb-dashboard/main.go tests/cli/m1_s1_cli_test.go && GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S1DoctorADB'`
+  first exited `1` because the timeout fixture used `sleep 10` as a shell
+  child and exceeded the test harness timeout.
+- After changing the timeout fake to `exec sleep 10`, command
+  `gofmt -w tests/cli/m1_s1_cli_test.go && GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S1DoctorADB'`
+  exited `0`.
+Changed:
+- `cmd/adb-dashboard/main.go`
+- `tests/cli/m1_s1_cli_test.go`
+Next: green
+Blocker: none
+
+Phase: green
+Result: GREEN VERIFIED
+Evidence:
+- Focused test
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S1DoctorADB'`
+  exited `0`.
+- CLI package test
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli`
+  exited `0`.
+- Repository test
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+  exited `0`.
+- Real-path smoke built the real `./cmd/adb-dashboard` binary and ran
+  `doctor` with three controlled `PATH` cases: success exited `0`, stdout
+  contained `adbExecutable: PASS` and `adbVersion: PASS version=Android Debug
+  Bridge version smoke-success`, stderr was empty, and fake log contained only
+  `version`; missing `adb` exited `3`, stdout contained `adbExecutable: FAIL
+  error=not found in PATH`, stderr was empty, and no fake log was created;
+  failing `adb version` exited `3`, stdout contained `adbVersion: FAIL
+  error=exit status 42`, stderr was empty, and fake log contained only
+  `version`.
+- Broad checks passed:
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
+  exited `0`;
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+  exited `0`;
+  `git diff --check` exited `0`.
+Changed:
+- `cmd/adb-dashboard/main.go`
+- `tests/cli/m1_s1_cli_test.go`
+Next: documentation
+Blocker: none
+
+Phase: documentation
+Result: DOCS SYNCED
+Evidence:
+- `README.md` is kit documentation, not user-facing `adb-dashboard doctor`
+  behavior documentation.
+- `docs/SPECIFICATION.md` doctor report examples had a stale devices row
+  claiming `/api/v1/devices` availability, which conflicts with `M2-S1`
+  out-of-scope behavior; the row now remains `NIY devices.refresh is not
+  implemented yet`.
+- Stale-text search
+  `rg -n 'devices: NIY devices\.refresh is available through /api/v1/devices' docs/SPECIFICATION.md docs/roadmap.md`
+  exited `1` with no matches.
+- A combined command
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./... && git diff --check && rg -n 'devices: NIY devices\.refresh is available through /api/v1/devices' docs/SPECIFICATION.md docs/roadmap.md`
+  exited `1` because the final stale-text search found no matches; vet and
+  diff were rerun separately and exited `0`.
 Changed:
 - `docs/SPECIFICATION.md`
-- `docs/roadmap.md`
 Next: review
 Blocker: none
 
 Phase: review
 Result: REVIEW PASSED
 Evidence:
-- Stale-contract search
-  `rg -n '1\.0\.0|none for accepted|adb\.discovery is not implemented|adb: NIY|Executing \`adb\`|does not execute \`adb\`|Future ADB|Reserved for future ADB|Blocking gaps: None for the local bootstrap contract|unavailable rows remain \`NIY\`' docs/SPECIFICATION.md docs/roadmap.md`
-  exited `1` with no matches.
-- Identifier search confirmed `docs/SPECIFICATION.md` contains `CAP-010`
-  through `CAP-012`, `AC-010-*`, `AC-011-*`, and `AC-012-*`, and
-  `docs/roadmap.md` contains `M2-S1` through `M2-S4` with
-  `Next eligible slice: M2-S1`.
-- `git diff --check` exited `0`.
-- Diff is documentation-only before cycle state/history recording and contains
-  no production code, tests, generated artifacts, dependencies, or commits.
+- Exactly one accepted slice was attempted: `M2-S1`.
+- `AC-006-001` and `AC-010-001` are covered by the success process test and
+  real-path success smoke: `doctor` exits `0`, prints ADB executable/version
+  `PASS` rows, stderr is empty, startup directories are created, and fake ADB
+  log contains only `version`.
+- `AC-010-002` is covered by the no-ADB process test and real-path smoke:
+  `doctor` exits `3`, prints documented unavailable rows, stderr is empty, and
+  no fake ADB log is created.
+- `AC-010-003` is covered by process tests for nonzero exit, empty stdout, and
+  timeout, plus real-path nonzero smoke: `doctor` exits `3`, prints
+  `adbVersion: FAIL`, stderr is empty, and fake ADB log contains only
+  `version`.
+- Diff inspection found production changes limited to the existing doctor path,
+  tests limited to CLI process tests and fixtures, and documentation sync
+  limited to the stale doctor report examples.
+- No production shell interpolation, unsupported ADB command, status API/device
+  API/browser behavior, dependency change, generated artifact, placeholder
+  success path, or unrelated cleanup was introduced.
 Changed:
 - `.codex/plans/current.md`
-Next: committed
+Next: ready
 Blocker: none
 
-Phase: committed
-Result: COMMITTED
+Phase: ready
+Result: CYCLE READY
 Evidence:
-- `CYCLE-20260729-M2-ROADMAP` reached `REVIEW PASSED`.
-- `git commit -m "docs: add m2 adb discovery roadmap"` created commit
-  `108d6b44b7f185756799d69397a0b81bfc3ca39c`.
-- `git push -u origin agent/add-m2-adb-roadmap` pushed the branch and set
-  upstream tracking.
+- `REVIEW PASSED` for `CYCLE-20260729-M2-S1`.
+- Working tree contains in-scope edits only:
+  `.codex/plans/current.md`, `cmd/adb-dashboard/main.go`,
+  `docs/SPECIFICATION.md`, and `tests/cli/m1_s1_cli_test.go`.
 Changed:
 - `.codex/plans/current.md`
-- `.codex/cycles/history.md`
-- `docs/SPECIFICATION.md`
-- `docs/roadmap.md`
-Next: open draft PR.
+Next: commit only if authorized
 Blocker: none

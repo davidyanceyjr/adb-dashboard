@@ -643,7 +643,7 @@ projectDir: NIY storage.projects is not implemented yet
 adbExecutable: PASS path=PATH
 adbVersion: PASS version=VERSION
 adbServer: NIY adb.server is not implemented yet
-devices: NIY devices.refresh is available through /api/v1/devices
+devices: NIY devices.refresh is not implemented yet
 hostTools: NIY hosttools.discovery is not implemented yet
 ```
 
@@ -660,7 +660,7 @@ projectDir: NIY storage.projects is not implemented yet
 adbExecutable: PASS path=PATH
 adbVersion: PASS version=VERSION
 adbServer: NIY adb.server is not implemented yet
-devices: NIY devices.refresh is available through /api/v1/devices
+devices: NIY devices.refresh is not implemented yet
 hostTools: NIY hosttools.discovery is not implemented yet
 ```
 

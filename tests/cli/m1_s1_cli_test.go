@@ -134,8 +134,8 @@ func TestM1S2DoctorDefaultsCreateOnlyCurrentStartupDirectories(t *testing.T) {
 		"tempDir: PASS path=" + tempDir,
 		"cacheDir: NIY storage.cache is not implemented yet",
 		"projectDir: NIY storage.projects is not implemented yet",
-		"adbExecutable: NIY adb.discovery is not implemented yet",
-		"adbVersion: NIY adb.discovery is not implemented yet",
+		"adbExecutable: PASS path=" + fakeADBPath(t, env),
+		"adbVersion: PASS version=Android Debug Bridge version 1.0.41",
 		"adbServer: NIY adb.server is not implemented yet",
 		"devices: NIY devices.refresh is not implemented yet",
 		"hostTools: NIY hosttools.discovery is not implemented yet",
@@ -146,7 +146,150 @@ func TestM1S2DoctorDefaultsCreateOnlyCurrentStartupDirectories(t *testing.T) {
 	}
 	assertDirExists(t, dataDir)
 	assertDirExists(t, tempDir)
-	assertNoFutureStateOrExternalSideEffects(t, env)
+	assertNoFutureStateOrExternalSideEffectsAllowADB(t, env)
+}
+
+func TestM2S1DoctorADBVersionDiscoverySuccess(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$@" > "$ADB_MARKER"
+if [ "$1" != "version" ] || [ "$#" -ne 1 ]; then
+  echo "unexpected adb arguments" >&2
+  exit 17
+fi
+printf '\nAndroid Debug Bridge version 1.0.41\nVersion 35.0.2\n'
+`)
+
+	result := runDashboard(t, binary, env, "doctor")
+
+	if result.code != 0 {
+		t.Fatalf("exit status = %d, want 0; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("stderr = %q, want empty", result.stderr)
+	}
+	dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+	tempDir := filepath.Join(values["XDG_RUNTIME_DIR"], "adb-dashboard")
+	want := strings.Join([]string{
+		"adb-dashboard doctor",
+		"overall: PASS",
+		"config: PASS source=defaults listen=127.0.0.1:8080 readOnly=false logLevel=info",
+		"dataDir: PASS path=" + dataDir,
+		"tempDir: PASS path=" + tempDir,
+		"cacheDir: NIY storage.cache is not implemented yet",
+		"projectDir: NIY storage.projects is not implemented yet",
+		"adbExecutable: PASS path=" + adbPath,
+		"adbVersion: PASS version=Android Debug Bridge version 1.0.41",
+		"adbServer: NIY adb.server is not implemented yet",
+		"devices: NIY devices.refresh is not implemented yet",
+		"hostTools: NIY hosttools.discovery is not implemented yet",
+		"",
+	}, "\n")
+	if result.stdout != want {
+		t.Fatalf("doctor stdout mismatch\nwant:\n%s\ngot:\n%s", want, result.stdout)
+	}
+	assertFileContains(t, values["ADB_MARKER"], "version\n")
+	assertDirExists(t, dataDir)
+	assertDirExists(t, tempDir)
+	assertPathAbsent(t, values["BROWSER_MARKER"])
+}
+
+func TestM2S1DoctorADBUnavailableExitsThree(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	env = removeFakeADB(t, env)
+
+	result := runDashboard(t, binary, env, "doctor")
+
+	if result.code != 3 {
+		t.Fatalf("exit status = %d, want 3; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("stderr = %q, want empty", result.stderr)
+	}
+	wantContains := []string{
+		"overall: FAIL\n",
+		"adbExecutable: FAIL error=not found in PATH\n",
+		"adbVersion: NIY adb.version unavailable until adb executable is found\n",
+		"adbServer: NIY adb.server is not implemented yet\n",
+	}
+	for _, want := range wantContains {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("doctor stdout missing %q\nstdout:\n%s", want, result.stdout)
+		}
+	}
+	assertPathAbsent(t, values["ADB_MARKER"])
+	assertPathAbsent(t, values["BROWSER_MARKER"])
+}
+
+func TestM2S1DoctorADBVersionFailuresExitThree(t *testing.T) {
+	binary := buildDashboard(t)
+
+	tests := []struct {
+		name            string
+		script          string
+		wantErrorDetail string
+	}{
+		{
+			name: "nonzero",
+			script: `#!/bin/sh
+printf '%s\n' "$@" > "$ADB_MARKER"
+echo "adb exploded" >&2
+exit 42
+`,
+			wantErrorDetail: "exit status 42",
+		},
+		{
+			name: "empty_stdout",
+			script: `#!/bin/sh
+printf '%s\n' "$@" > "$ADB_MARKER"
+printf '\n\n'
+`,
+			wantErrorDetail: "no version output",
+		},
+		{
+			name: "timeout",
+			script: `#!/bin/sh
+printf '%s\n' "$@" > "$ADB_MARKER"
+exec sleep 10
+`,
+			wantErrorDetail: "timed out",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := isolatedEnv(t)
+			values := envMap(env)
+			adbPath := writeFakeADB(t, env, test.script)
+
+			result := runDashboard(t, binary, env, "doctor")
+
+			if result.code != 3 {
+				t.Fatalf("exit status = %d, want 3; stderr = %q; stdout = %q", result.code, result.stderr, result.stdout)
+			}
+			if result.stderr != "" {
+				t.Fatalf("stderr = %q, want empty", result.stderr)
+			}
+			wantContains := []string{
+				"overall: FAIL\n",
+				"adbExecutable: PASS path=" + adbPath + "\n",
+				"adbVersion: FAIL error=",
+				test.wantErrorDetail,
+				"adbServer: NIY adb.server is not implemented yet\n",
+			}
+			for _, want := range wantContains {
+				if !strings.Contains(result.stdout, want) {
+					t.Fatalf("doctor stdout missing %q\nstdout:\n%s", want, result.stdout)
+				}
+			}
+			assertFileContains(t, values["ADB_MARKER"], "version\n")
+			assertPathAbsent(t, values["BROWSER_MARKER"])
+		})
+	}
 }
 
 func TestM1S2DoctorReportsHighestPrioritySuccessfulConfiguration(t *testing.T) {
@@ -210,6 +353,8 @@ level = "trace"
 		"dataDir: PASS path=" + envDataDir,
 		"tempDir: PASS path=" + cliTempDir,
 		"cacheDir: NIY storage.cache is not implemented yet",
+		"adbExecutable: PASS path=" + fakeADBPath(t, env),
+		"adbVersion: PASS version=Android Debug Bridge version 1.0.41",
 		"hostTools: NIY hosttools.discovery is not implemented yet",
 	}
 	for _, want := range wantContains {
@@ -223,7 +368,7 @@ level = "trace"
 	assertPathAbsent(t, filepath.Join(values["HOME"], "env-file-temp"))
 	assertPathAbsent(t, filepath.Join(values["HOME"], "user-data"))
 	assertPathAbsent(t, filepath.Join(values["HOME"], "user-temp"))
-	assertNoFutureStateOrExternalSideEffects(t, env)
+	assertNoFutureStateOrExternalSideEffectsAllowADB(t, env)
 }
 
 func TestM1S3ConfigurationFailuresExitBeforeReportOrStartup(t *testing.T) {
@@ -437,6 +582,8 @@ func TestM1S3DoctorReportsStartupDirectoryFailures(t *testing.T) {
 		"dataDir: FAIL path=" + dataFile + " error=",
 		"tempDir: PASS path=" + tempDir + "\n",
 		"cacheDir: NIY storage.cache is not implemented yet\n",
+		"adbExecutable: PASS path=" + fakeADBPath(t, env) + "\n",
+		"adbVersion: PASS version=Android Debug Bridge version 1.0.41\n",
 		"hostTools: NIY hosttools.discovery is not implemented yet\n",
 	}
 	for _, want := range wantContains {
@@ -445,7 +592,7 @@ func TestM1S3DoctorReportsStartupDirectoryFailures(t *testing.T) {
 		}
 	}
 	assertDirExists(t, tempDir)
-	assertNoFutureStateOrExternalSideEffects(t, env)
+	assertNoFutureStateOrExternalSideEffectsAllowADB(t, env)
 }
 
 func TestM1S3StartupDirectoryFailuresExitBeforeServerSideEffects(t *testing.T) {
@@ -1244,7 +1391,7 @@ func isolatedEnv(t *testing.T) []string {
 
 	adbMarker := filepath.Join(root, "adb-invoked")
 	adbPath := filepath.Join(binDir, "adb")
-	if err := os.WriteFile(adbPath, []byte("#!/bin/sh\necho invoked > "+adbMarker+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(adbPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$ADB_MARKER\"\nprintf 'Android Debug Bridge version 1.0.41\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	browserMarker := filepath.Join(root, "browser-opened")
@@ -1302,6 +1449,23 @@ func assertNoFutureStateOrExternalSideEffects(t *testing.T, env []string) {
 	values := envMap(env)
 	for _, path := range []string{
 		values["ADB_MARKER"],
+		values["BROWSER_MARKER"],
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "cache"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "projects"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "uploads"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "history"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "jobs"),
+	} {
+		assertPathAbsent(t, path)
+	}
+}
+
+func assertNoFutureStateOrExternalSideEffectsAllowADB(t *testing.T, env []string) {
+	t.Helper()
+
+	values := envMap(env)
+	assertFileContains(t, values["ADB_MARKER"], "version\n")
+	for _, path := range []string{
 		values["BROWSER_MARKER"],
 		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "cache"),
 		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "projects"),
@@ -1371,6 +1535,37 @@ func waitFileContains(t *testing.T, path, want string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("%s did not become %q: %v", path, want, lastErr)
+}
+
+func writeFakeADB(t *testing.T, env []string, script string) string {
+	t.Helper()
+
+	adbPath := fakeADBPath(t, env)
+	if err := os.WriteFile(adbPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return adbPath
+}
+
+func removeFakeADB(t *testing.T, env []string) []string {
+	t.Helper()
+
+	adbPath := fakeADBPath(t, env)
+	if err := os.Remove(adbPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return setEnv(env, "PATH", filepath.Dir(adbPath))
+}
+
+func fakeADBPath(t *testing.T, env []string) string {
+	t.Helper()
+
+	pathValue := envMap(env)["PATH"]
+	first, _, _ := strings.Cut(pathValue, string(os.PathListSeparator))
+	if first == "" {
+		t.Fatal("isolated PATH has no first directory")
+	}
+	return filepath.Join(first, "adb")
 }
 
 func assertPathAbsent(t *testing.T, path string) {

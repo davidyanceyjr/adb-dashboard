@@ -137,11 +137,18 @@ func runDoctor(args []string, stdout, stderr *os.File) int {
 
 	dataErr := ensureDir(cfg.dataDir.value)
 	tempErr := ensureDir(cfg.tempDir.value)
+	adb := discoverADBVersion()
 	overall := "PASS"
 	exitCode := 0
 	if dataErr != nil || tempErr != nil {
 		overall = "FAIL"
 		exitCode = 5
+	}
+	if adb.hasFailure() {
+		overall = "FAIL"
+		if exitCode == 0 {
+			exitCode = 3
+		}
 	}
 
 	fmt.Fprintln(stdout, "adb-dashboard doctor")
@@ -151,8 +158,7 @@ func runDoctor(args []string, stdout, stderr *os.File) int {
 	printDirRow(stdout, "tempDir", cfg.tempDir.value, tempErr)
 	fmt.Fprintln(stdout, "cacheDir: NIY storage.cache is not implemented yet")
 	fmt.Fprintln(stdout, "projectDir: NIY storage.projects is not implemented yet")
-	fmt.Fprintln(stdout, "adbExecutable: NIY adb.discovery is not implemented yet")
-	fmt.Fprintln(stdout, "adbVersion: NIY adb.discovery is not implemented yet")
+	printADBDoctorRows(stdout, adb)
 	fmt.Fprintln(stdout, "adbServer: NIY adb.server is not implemented yet")
 	fmt.Fprintln(stdout, "devices: NIY devices.refresh is not implemented yet")
 	fmt.Fprintln(stdout, "hostTools: NIY hosttools.discovery is not implemented yet")
@@ -591,6 +597,57 @@ func printDirRow(stdout *os.File, name, path string, err error) {
 		return
 	}
 	fmt.Fprintf(stdout, "%s: FAIL path=%s error=%s\n", name, path, err.Error())
+}
+
+type adbDiscovery struct {
+	path       string
+	version    string
+	execErr    string
+	versionErr string
+}
+
+func (adb adbDiscovery) hasFailure() bool {
+	return adb.execErr != "" || adb.versionErr != ""
+}
+
+func discoverADBVersion() adbDiscovery {
+	path, err := exec.LookPath("adb")
+	if err != nil {
+		return adbDiscovery{execErr: "not found in PATH"}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, path, "version")
+	output, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return adbDiscovery{path: path, versionErr: "timed out"}
+	}
+	if err != nil {
+		return adbDiscovery{path: path, versionErr: err.Error()}
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return adbDiscovery{path: path, version: line}
+		}
+	}
+	return adbDiscovery{path: path, versionErr: "no version output"}
+}
+
+func printADBDoctorRows(stdout *os.File, adb adbDiscovery) {
+	if adb.execErr != "" {
+		fmt.Fprintf(stdout, "adbExecutable: FAIL error=%s\n", adb.execErr)
+		fmt.Fprintln(stdout, "adbVersion: NIY adb.version unavailable until adb executable is found")
+		return
+	}
+	fmt.Fprintf(stdout, "adbExecutable: PASS path=%s\n", adb.path)
+	if adb.versionErr != "" {
+		fmt.Fprintf(stdout, "adbVersion: FAIL error=%s\n", adb.versionErr)
+		return
+	}
+	fmt.Fprintf(stdout, "adbVersion: PASS version=%s\n", adb.version)
 }
 
 func reportSource(cfg config) string {
