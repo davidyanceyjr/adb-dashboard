@@ -5,9 +5,9 @@
 - Goal: Implement doctor ADB executable and version discovery.
 - Roadmap slice: `M2-S1: Doctor ADB Executable And Version Discovery`
 - Branch or work context: Git repository on branch
-  `agent/add-m2-adb-roadmap` at `51c83cd`; upstream tracking is
-  `origin/agent/add-m2-adb-roadmap`. Working tree was clean before this
-  handoff update.
+  `agent/add-m2-adb-roadmap`; implementation commit
+  `9de3ebb6184670ca8038abb499d608665da3e6ae`; upstream tracking is
+  `origin/agent/add-m2-adb-roadmap`.
 - Specification anchors: `CAP-006`, `CAP-010`, `AC-006-001`,
   `AC-010-001`, `AC-010-002`, `AC-010-003`, `INV-DATA-003`
 - Acceptance criteria: `AC-006-001`, `AC-010-001`, `AC-010-002`,
@@ -34,10 +34,9 @@
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`;
   `git diff --check`
-- Current phase: ready
+- Current phase: committed
 - Blocker: none
-- Next phase: ready for commit or handoff; no next implementation slice
-  selected.
+- Next phase: select the next eligible implementation slice.
 
 ## Phase Results
 
@@ -258,5 +257,18 @@ Evidence:
   `docs/SPECIFICATION.md`, and `tests/cli/m1_s1_cli_test.go`.
 Changed:
 - `.codex/plans/current.md`
-Next: commit only if authorized
+Next: committed
+Blocker: none
+
+Phase: committed
+Result: COMMITTED
+Evidence:
+- `git commit -m "feat: discover adb version in doctor"` created commit
+  `9de3ebb6184670ca8038abb499d608665da3e6ae`.
+- Commit contains the production doctor ADB discovery implementation, focused
+  CLI process tests, specification example sync, and ready cycle state.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: push branch
 Blocker: none
