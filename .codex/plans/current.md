@@ -34,9 +34,9 @@
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`;
   `git diff --check`
-- Current phase: ready
+- Current phase: committed
 - Blocker: none
-- Next phase: commit if authorized
+- Next phase: push branch
 
 ## Phase Results
 
@@ -206,4 +206,15 @@ Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
 Next: commit if authorized
+Blocker: none
+
+Phase: committed
+Result: committed
+Evidence:
+- `git commit -m "feat: render browser device inventory"` exited `0` and
+  created commit `a8cf937c35732bc2388090a9d973185140125367`.
+Changed:
+- `cmd/adb-dashboard/main.go`
+- `tests/cli/m1_s1_cli_test.go`
+Next: push branch
 Blocker: none
