@@ -5,8 +5,8 @@
 - Goal: Render backend-derived ADB availability and read-only device inventory in
   the embedded browser shell.
 - Roadmap slice: `M2-S4: Browser ADB Device Inventory View`
-- Branch or work context: Git repository on branch
-  `feat/browser-adb-device-inventory`.
+- Branch or work context: Git repository on branch `main`; implementation
+  commit `a8cf937c35732bc2388090a9d973185140125367`.
 - Specification anchors: `CAP-007`, `CAP-011`, `CAP-012`, `AC-012-001`,
   `AC-012-002`, `AC-012-003`, `AC-012-004`, `INV-FRONTEND-001`,
   `INV-SEC-004`, `INV-DATA-003`
@@ -36,7 +36,7 @@
   `git diff --check`
 - Current phase: committed
 - Blocker: none
-- Next phase: push branch
+- Next phase: none
 
 ## Phase Results
 
@@ -213,8 +213,11 @@ Result: committed
 Evidence:
 - `git commit -m "feat: render browser device inventory"` exited `0` and
   created commit `a8cf937c35732bc2388090a9d973185140125367`.
+- `git push -u origin feat/browser-adb-device-inventory` exited `0`.
+- `git merge --ff-only feat/browser-adb-device-inventory` on `main` exited `0`.
+- `git push origin main` exited `0`.
 Changed:
 - `cmd/adb-dashboard/main.go`
 - `tests/cli/m1_s1_cli_test.go`
-Next: push branch
+Next: none
 Blocker: none
