@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.1.0
 - Current milestone: M2
-- Next eligible slice: M2-S3
+- Next eligible slice: M2-S4
 - Last reviewed: 2026-07-29
 
 This roadmap selects implementation order for the accepted local bootstrap and
@@ -497,7 +497,7 @@ Every implementation slice must:
 
 ### Slice M2-S3: Read-Only Devices API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Add a read-only device inventory route backed by `adb devices -l`.
 - Specification references: `CAP-008`, `CAP-011`, `AC-011-001`,
