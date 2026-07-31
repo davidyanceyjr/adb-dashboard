@@ -1204,6 +1204,9 @@ const dashboardShellHTML = `<!doctype html>
       min-width: 0;
       overflow-wrap: anywhere;
     }
+    .device-list {
+      white-space: pre-line;
+    }
   </style>
 </head>
 <body>
@@ -1214,6 +1217,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>bind</dt><dd id="server-bind">bind: unavailable</dd>
       <dt>read-only</dt><dd id="server-read-only">read-only: unavailable</dd>
       <dt>adb</dt><dd id="adb-status">adb: unavailable</dd>
+      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div></dd>
       <dt>watcher</dt><dd id="watcher-status">watcher: unavailable</dd>
       <dt>jobs</dt><dd id="jobs-status">jobs: unavailable</dd>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
@@ -1235,11 +1239,35 @@ const dashboardShellHTML = `<!doctype html>
     setText("server-bind", "bind: unavailable");
     setText("server-read-only", "read-only: unavailable");
     setText("adb-status", "adb: unavailable");
+    setText("device-count", "devices: unavailable");
+    setText("devices-list", "");
     setText("watcher-status", "watcher: unavailable");
     setText("jobs-status", "jobs: unavailable");
     setText("sessions-status", "sessions: unavailable");
     setText("storage-status", "storage: unavailable");
     setText("host-tools-status", "host tools: unavailable");
+  };
+
+  const devicesUnavailable = () => {
+    setText("device-count", "devices: unavailable");
+    setText("devices-list", "");
+  };
+
+  const loadDevices = async () => {
+    try {
+      const devicesResponse = await fetch("/api/v1/devices", { credentials: "same-origin" });
+      if (!devicesResponse.ok) {
+        throw new Error("devices unavailable");
+      }
+      const inventory = await devicesResponse.json();
+      const devices = Array.isArray(inventory.devices) ? inventory.devices : [];
+      setText("device-count", "devices: " + String(devices.length));
+      setText("devices-list", devices.map((device) => {
+        return String(device.serial || "") + " " + String(device.state || "");
+      }).join("\n"));
+    } catch (_) {
+      devicesUnavailable();
+    }
   };
 
   const loadStatus = async () => {
@@ -1259,6 +1287,11 @@ const dashboardShellHTML = `<!doctype html>
       setText("server-bind", "bind: " + status.server.bind);
       setText("server-read-only", "read-only: " + String(status.server.readOnly));
       setText("adb-status", "adb: " + status.adb.status);
+      if (status.adb.status === "available") {
+        await loadDevices();
+      } else {
+        devicesUnavailable();
+      }
       setText("watcher-status", "watcher: " + status.watcher.status);
       setText("jobs-status", "jobs: " + status.jobs.status);
       setText("sessions-status", "sessions: " + status.sessions.status);

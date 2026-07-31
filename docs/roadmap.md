@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.1.0
 - Current milestone: M2
-- Next eligible slice: M2-S4
+- Next eligible slice: none
 - Last reviewed: 2026-07-29
 
 This roadmap selects implementation order for the accepted local bootstrap and
@@ -554,7 +554,7 @@ Every implementation slice must:
 
 ### Slice M2-S4: Browser ADB Device Inventory View
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Render backend-derived ADB availability and read-only device
   inventory in the embedded browser shell.

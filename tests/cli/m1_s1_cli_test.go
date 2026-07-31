@@ -1171,6 +1171,141 @@ exec sleep 10
 	})
 }
 
+func TestM2S4BrowserADBDeviceInventoryView(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("renders_available_inventory", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version browser-devices\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  printf 'ZY22 offline transport_id:2\n'
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--read-only", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		html := string(body)
+		assertBrowserShellOmitsUnsupportedADBControls(t, html)
+
+		rendered := runFrontendScriptWithDeviceFailure(t, extractInlineScript(t, html), baseURL, false)
+		for _, want := range []string{
+			"adb-status=adb: available",
+			"device-count=devices: 2",
+			"devices-list=emulator-5554 device\nZY22 offline",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{
+			"csrfToken",
+			"webSocketToken",
+			adbPath,
+			values["HOME"],
+			"Android Debug Bridge version browser-devices",
+			"unexpected adb arguments",
+			"shell",
+			"logcat",
+			"install",
+			"uninstall",
+			"reboot",
+			"screenshot",
+		} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered shell contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertFileContains(t, values["ADB_MARKER"], "version\nversion\ndevices -l\n")
+	})
+
+	t.Run("renders_unavailable_without_inventory_success", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		env = removeFakeADB(t, env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithDeviceFailure(t, extractInlineScript(t, string(body)), baseURL, false)
+
+		for _, want := range []string{
+			"adb-status=adb: unavailable",
+			"device-count=devices: unavailable",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{"devices: 0", "devices: 1", "emulator-5554", "ZY22"} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered unavailable shell contains stale success text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertPathAbsent(t, values["ADB_MARKER"])
+	})
+
+	t.Run("renders_inventory_failure_without_stale_devices", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version browser-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  echo "device command secret $HOME" >&2
+  exit 42
+fi
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithDeviceFailure(t, extractInlineScript(t, string(body)), baseURL, false)
+
+		for _, want := range []string{
+			"adb-status=adb: available",
+			"device-count=devices: unavailable",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{
+			"devices: 0",
+			"devices: 1",
+			"emulator-5554",
+			"device command secret",
+			values["HOME"],
+		} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered failure shell contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertFileContains(t, values["ADB_MARKER"], "version\nversion\ndevices -l\n")
+	})
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -1405,24 +1540,7 @@ func TestM1S6EmbeddedBrowserShellRendersBackendState(t *testing.T) {
 	}
 
 	html := string(body)
-	for _, forbidden := range []string{
-		"csrfToken",
-		"webSocketToken",
-		"<button",
-		"<form",
-		"href=",
-		"devices",
-		"raw command",
-		"logcat",
-		"transfers",
-		"artifacts",
-		"reboot",
-		"install",
-	} {
-		if strings.Contains(strings.ToLower(html), strings.ToLower(forbidden)) {
-			t.Fatalf("root shell contains forbidden text %q:\n%s", forbidden, html)
-		}
-	}
+	assertBrowserShellOmitsUnsupportedADBControls(t, html)
 
 	script := extractInlineScript(t, html)
 	rendered := runFrontendScript(t, script, baseURL, false)
@@ -1432,6 +1550,7 @@ func TestM1S6EmbeddedBrowserShellRendersBackendState(t *testing.T) {
 		"bind: " + addr,
 		"read-only: true",
 		"adb: available",
+		"devices: unavailable",
 		"watcher: NIY",
 		"jobs: NIY",
 		"sessions: NIY",
@@ -1528,6 +1647,18 @@ func extractInlineScript(t *testing.T, html string) string {
 func runFrontendScript(t *testing.T, script, baseURL string, failStatus bool) string {
 	t.Helper()
 
+	return runFrontendScriptWithFailures(t, script, baseURL, failStatus, false)
+}
+
+func runFrontendScriptWithDeviceFailure(t *testing.T, script, baseURL string, failDevices bool) string {
+	t.Helper()
+
+	return runFrontendScriptWithFailures(t, script, baseURL, false, failDevices)
+}
+
+func runFrontendScriptWithFailures(t *testing.T, script, baseURL string, failStatus, failDevices bool) string {
+	t.Helper()
+
 	nodePath, err := exec.LookPath("node")
 	if err != nil {
 		t.Fatalf("node is required for deterministic browser-shell script execution: %v", err)
@@ -1536,6 +1667,7 @@ func runFrontendScript(t *testing.T, script, baseURL string, failStatus bool) st
 	harness := fmt.Sprintf(`
 const baseURL = %q;
 const failStatus = %t;
+const failDevices = %t;
 const elements = {};
 function element(id) {
   if (!elements[id]) {
@@ -1558,6 +1690,9 @@ global.fetch = async (target, options = {}) => {
   if (failStatus && url.pathname === "/api/v1/status") {
     return { ok: false, status: 503, json: async () => ({}) };
   }
+  if (failDevices && url.pathname === "/api/v1/devices") {
+    return { ok: false, status: 502, json: async () => ({}) };
+  }
   return realFetch(url.href, {
     ...options,
     headers: {
@@ -1572,7 +1707,7 @@ setTimeout(() => {
     console.log(key + "=" + elements[key].textContent);
   }
 }, 200);
-`, baseURL, failStatus, script)
+`, baseURL, failStatus, failDevices, script)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1587,6 +1722,31 @@ setTimeout(() => {
 		t.Fatalf("frontend script timed out\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
 	}
 	return stdout.String()
+}
+
+func assertBrowserShellOmitsUnsupportedADBControls(t *testing.T, text string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"csrfToken",
+		"webSocketToken",
+		"<button",
+		"<form",
+		"href=",
+		"raw command",
+		"logcat",
+		"transfers",
+		"artifacts",
+		"reboot",
+		"install",
+		"uninstall",
+		"screenshot",
+		"shell",
+	} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("browser shell contains forbidden text %q:\n%s", forbidden, text)
+		}
+	}
 }
 
 type runningDashboard struct {

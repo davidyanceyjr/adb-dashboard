@@ -1,60 +1,64 @@
 # Active Cycle
 
-- Cycle ID: CYCLE-20260731-M2-S3
+- Cycle ID: CYCLE-20260731-M2-S4
 - Mode: feature
-- Goal: Implement read-only devices API.
-- Roadmap slice: `M2-S3: Read-Only Devices API`
-- Branch or work context: Git repository on branch `main`; implementation
-  commit `cd421167a5a22242995de83598cb1d6dc0514441`.
-- Specification anchors: `CAP-008`, `CAP-011`, `AC-011-001`,
-  `AC-011-002`, `AC-011-003`, `AC-011-004`, `AC-011-005`,
-  `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-003`
-- Acceptance criteria: `AC-011-001`, `AC-011-002`, `AC-011-003`,
-  `AC-011-004`, `AC-011-005`
-- Acceptance boundary: HTTP request through production routing with isolated
-  `PATH` and fake `adb` executables.
-- In scope: `GET /api/v1/devices`; resolve ADB through `CAP-010`; invoke only
-  `adb devices -l` after successful version discovery; parse serial, state,
-  product, model, device, and transport ID fields; return documented success
-  JSON; return documented `503 adb_unavailable` and `502 adb_devices_failed`
-  envelopes; prove host and origin rejection happens before ADB execution.
-- Out of scope: browser rendering, persisted inventory, polling, watchers,
-  explicit ADB server controls, device selection, shell, logcat, install, file
-  transfer, screenshots, package workflows, jobs, WebSockets, and device
-  mutation.
+- Goal: Render backend-derived ADB availability and read-only device inventory in
+  the embedded browser shell.
+- Roadmap slice: `M2-S4: Browser ADB Device Inventory View`
+- Branch or work context: Git repository on branch
+  `feat/browser-adb-device-inventory`.
+- Specification anchors: `CAP-007`, `CAP-011`, `CAP-012`, `AC-012-001`,
+  `AC-012-002`, `AC-012-003`, `AC-012-004`, `INV-FRONTEND-001`,
+  `INV-SEC-004`, `INV-DATA-003`
+- Acceptance criteria: `AC-012-001`, `AC-012-002`, `AC-012-003`,
+  `AC-012-004`
+- Acceptance boundary: Browser load through the running server using the
+  embedded shell and deterministic frontend script execution against production
+  HTTP routes.
+- In scope: Root shell rendering for ADB available, unavailable, and error
+  states; requesting `/api/v1/devices` only after status reports ADB available;
+  visible device count, serial, and state; inventory failure fallback; absence
+  of unsupported ADB controls and sensitive values.
+- Out of scope: Device actions, polling, watchers, sessions, WebSockets, file
+  transfer, screenshots, logcat, package workflows, artifact analysis, settings,
+  authentication, persistence, theming beyond the current shell, packaging, and
+  deployment.
 - Focused test command:
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S3ReadOnlyDevicesAPI'`
-- Real-path command or procedure: build the real `./cmd/adb-dashboard` binary,
-  start the server with fake `adb` fixtures for zero-device, multi-device,
-  unavailable, failing, malformed, timeout, and rejected-security cases,
-  request `GET /api/v1/devices`, then inspect HTTP statuses, JSON bodies, and
-  fake ADB invocation logs.
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S4BrowserADBDeviceInventoryView'`
+- Real-path command or procedure: Build the real `./cmd/adb-dashboard` binary,
+  start the server with deterministic fake `adb` executables for available
+  devices and inventory failure, load the root shell through deterministic
+  browser-script execution, and inspect visible ADB/device state plus absence of
+  forbidden controls and sensitive values.
 - Broad verification commands:
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`;
   `git diff --check`
-- Current phase: committed
+- Current phase: ready
 - Blocker: none
-- Next phase: push branch.
+- Next phase: commit if authorized
 
 ## Phase Results
 
 Phase: discovery
 Result: DISCOVERY READY
 Evidence:
-- Applicable instructions read from root `AGENTS.md`, active cycle state,
+- Applicable instructions read from root `AGENTS.md`,
+  `.agents/skills/implementation-cycle/SKILL.md`, active cycle state,
   `docs/SPECIFICATION.md`, `docs/roadmap.md`,
   `docs/IMPLEMENTATION_CYCLE_GUIDE.md`, `docs/READINESS_CHECKLIST.md`,
   `docs/SPECIFICATION_GUIDE.md`, `docs/ROADMAP_GUIDE.md`, and `go.mod`.
-- `git status --short --branch` exited `0` and returned branch `main` with a
-  clean working tree before cycle edits.
-- `docs/roadmap.md` is accepted, names `M2-S3` as the next eligible slice, and
-  marks dependency `M2-S2` verified.
-- `.codex/cycles/history.md` records `M2-S2` committed at
-  `f37f83da5797803c4502dfda2e8e82d26ff03626`; `git log --oneline -8` shows
-  that commit on `main`.
-- Focused command resolved to
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S3ReadOnlyDevicesAPI'`.
+- `git status --short --branch` exited `0` and returned a clean `main` branch
+  before cycle edits.
+- `docs/roadmap.md` is accepted and names `M2-S4` as the next eligible slice.
+- `.codex/cycles/history.md` records dependency `M2-S3` committed at
+  `cd421167a5a22242995de83598cb1d6dc0514441`.
+- `node --version` exited `0` with `v26.5.0`, so deterministic frontend script
+  execution is available.
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -list 'TestM1S6|TestM2S3' ./tests/cli`
+  exited `0` and showed the existing browser-shell and devices API process
+  tests.
+- `git switch -c feat/browser-adb-device-inventory` exited `0`.
 Changed:
 - `.codex/plans/current.md`
 Next: contract
@@ -63,15 +67,17 @@ Blocker: none
 Phase: contract
 Result: CONTRACT READY
 Evidence:
-- Specification anchors `CAP-008`, `CAP-011`, `AC-011-001`,
-  `AC-011-002`, `AC-011-003`, `AC-011-004`, `AC-011-005`,
-  `INV-SEC-001`, `INV-SEC-003`, and `INV-DATA-003` are accepted.
-- Contract defines HTTP `200` success with an `adb` object and `devices` array,
-  HTTP `503` error code `adb_unavailable` when ADB discovery is unavailable or
-  version discovery fails, and HTTP `502` error code `adb_devices_failed` for
-  nonzero, timeout, or malformed `adb devices -l` output.
-- Contract requires security rejection before ADB execution and allows only
-  `adb version` and `adb devices -l` commands for this slice.
+- Specification anchors `CAP-007`, `CAP-011`, `CAP-012`, `AC-012-001`,
+  `AC-012-002`, `AC-012-003`, `AC-012-004`, `INV-FRONTEND-001`,
+  `INV-SEC-004`, and `INV-DATA-003` are accepted.
+- Contract requires the browser shell to request `/api/v1/devices` only after
+  status reports ADB available, render `adb: available`, device count, and each
+  returned device serial/state, and render `devices: unavailable` for ADB
+  unavailable or inventory failure without stale success state.
+- Contract forbids rendering token values, ADB executable paths, command stderr,
+  environment values, or controls, forms, and links for out-of-scope ADB
+  workflows.
+- Primary acceptance boundary is browser load through the running server.
 Changed:
 - none
 Next: red
@@ -80,8 +86,11 @@ Blocker: none
 Phase: design
 Result: DESIGN NOT REQUIRED
 Evidence:
-- Existing production location `cmd/adb-dashboard/main.go` owns HTTP routing,
-  security policy enforcement, API envelopes, and `CAP-010` ADB discovery.
+- Existing production location `cmd/adb-dashboard/main.go` owns the embedded
+  shell HTML and browser script.
+- Existing test location `tests/cli/m1_s1_cli_test.go` already exercises the
+  browser shell against a running production server with deterministic script
+  execution.
 Changed:
 - none
 Next: red
@@ -91,11 +100,13 @@ Phase: red
 Result: RED CONFIRMED
 Evidence:
 - Focused test
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S3ReadOnlyDevicesAPI'`
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S4BrowserADBDeviceInventoryView'`
   exited `1`.
-- The focused HTTP process test reached the running server and failed because
-  `/api/v1/devices` returned HTTP `404` with error code `not_found` instead of
-  the documented success and ADB error responses.
+- The focused browser-boundary process test reached the running server,
+  loaded the embedded shell script, and failed because the rendered output did
+  not include `device-count=devices: 2` for available inventory or
+  `device-count=devices: unavailable` for ADB unavailable and inventory failure
+  cases.
 Changed:
 - `tests/cli/m1_s1_cli_test.go`
 Next: build
@@ -104,12 +115,12 @@ Blocker: none
 Phase: build
 Result: BUILD APPLIED
 Evidence:
-- Production routing now handles `GET /api/v1/devices` after security policy
-  checks, reuses `adb version` discovery, invokes `adb devices -l` with an
-  argument vector, parses documented row fields, and writes documented `200`,
-  `503 adb_unavailable`, or `502 adb_devices_failed` JSON.
+- Production embedded shell now renders device inventory fields, requests
+  `/api/v1/devices` only after status reports ADB `available`, renders visible
+  device count plus serial/state rows, and clears device state to
+  `devices: unavailable` when ADB is unavailable or inventory retrieval fails.
 - Development command
-  `gofmt -w cmd/adb-dashboard/main.go tests/cli/m1_s1_cli_test.go` exited `0`.
+  `gofmt -w tests/cli/m1_s1_cli_test.go cmd/adb-dashboard/main.go` exited `0`.
 Changed:
 - `cmd/adb-dashboard/main.go`
 - `tests/cli/m1_s1_cli_test.go`
@@ -120,15 +131,17 @@ Phase: green
 Result: GREEN VERIFIED
 Evidence:
 - Focused test
-  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S3ReadOnlyDevicesAPI'`
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM2S4BrowserADBDeviceInventoryView'`
   exited `0`.
-- Real-path smoke built the real `./cmd/adb-dashboard` binary and exercised
-  zero-device, multi-device, ADB-unavailable, `devices -l` failure, malformed
-  output, timeout, and rejected-Host cases. Observed statuses were `200`,
-  `200`, `503`, `502`, `502`, `502`, and `403`; success responses contained
-  parsed devices JSON; error responses used the documented envelopes; fake ADB
-  logs contained only `version` and `devices -l` for accepted requests and no
-  log for the rejected Host request.
+- Regression shell test
+  `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM1S6EmbeddedBrowserShellRendersBackendState'`
+  exited `0`.
+- Real-path browser-script exercise in `TestM2S4BrowserADBDeviceInventoryView`
+  built the real command, started the production server with deterministic fake
+  ADB fixtures, loaded the root shell script, observed `adb: available`,
+  `devices: 2`, serial/state rows for `emulator-5554 device` and `ZY22
+  offline`, observed `devices: unavailable` when ADB was absent or inventory
+  failed, and confirmed forbidden controls and sensitive values were absent.
 - Broad checks passed:
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
   exited `0`;
@@ -144,12 +157,12 @@ Blocker: none
 Phase: documentation
 Result: DOCS SYNCED
 Evidence:
-- `docs/SPECIFICATION.md` already defines the M2-S3 devices API contract and
-  response/error shapes; no specification text change was required.
-- `README.md` is kit documentation, not user-facing ADB Dashboard API
-  documentation.
-- `docs/roadmap.md` now marks `M2-S3` verified and advances the next eligible
-  slice to `M2-S4`.
+- `docs/SPECIFICATION.md` already defines the M2-S4 browser ADB/device
+  inventory contract and no contract text change was required.
+- `README.md` is workflow-kit documentation, not user-facing ADB Dashboard
+  browser/API documentation.
+- `docs/roadmap.md` now marks `M2-S4` verified and sets next eligible slice to
+  `none`.
 - Documentation validation command `git diff --check` exited `0`.
 Changed:
 - `docs/roadmap.md`
@@ -159,22 +172,23 @@ Blocker: none
 Phase: review
 Result: REVIEW PASSED
 Evidence:
-- Exactly one accepted slice was attempted: `M2-S3`.
-- `AC-011-001` and `AC-011-002` are covered by focused HTTP tests and real-path
-  smoke for zero-device and multi-device `adb devices -l` output.
-- `AC-011-003` is covered by focused HTTP tests for absent ADB and failed
-  `adb version`; both return `503 adb_unavailable` and do not run
-  `devices -l`.
-- `AC-011-004` is covered by focused HTTP tests and real-path smoke for
-  nonzero, timed-out, and malformed `adb devices -l`; all return
-  `502 adb_devices_failed` with no `devices` array.
-- `AC-011-005`, `INV-SEC-001`, and `INV-SEC-003` are covered by focused
-  rejected Host, absolute-form host, and Origin tests; the rejected Host
-  real-path smoke created no ADB invocation log.
-- Diff inspection found production changes limited to the existing server route
-  file and tests limited to process/HTTP boundary coverage; no unsupported ADB
-  command, device mutation, persistence, browser rendering, dependency change,
-  placeholder success path, or unrelated cleanup was introduced.
+- Exactly one accepted slice was attempted: `M2-S4`.
+- `AC-012-001` is covered by the focused browser-boundary test and real-path
+  script exercise for ADB available plus two returned devices; visible output
+  includes ADB availability, count, serial, and state.
+- `AC-012-002` is covered by focused unavailable and inventory-failure cases;
+  visible output shows `devices: unavailable` and no stale successful device
+  list.
+- `AC-012-003` is covered by HTML and rendered-output checks for absence of
+  controls, forms, and links for out-of-scope ADB workflows.
+- `AC-012-004` is covered by rendered-output checks that reject token names,
+  ADB executable path, command stderr, environment path values, and version
+  strings.
+- Diff inspection found production changes limited to the existing embedded
+  shell, tests limited to process/browser boundary coverage, and documentation
+  limited to roadmap status; no unsupported device action, new route,
+  dependency, persistence, placeholder success path, or unrelated cleanup was
+  introduced.
 Changed:
 - `.codex/plans/current.md`
 Next: ready
@@ -183,23 +197,13 @@ Blocker: none
 Phase: ready
 Result: CYCLE READY
 Evidence:
-- `REVIEW PASSED` for `CYCLE-20260731-M2-S3`.
+- `REVIEW PASSED` for `CYCLE-20260731-M2-S4`.
 - Working tree contains in-scope edits only:
   `.codex/cycles/history.md`, `.codex/plans/current.md`,
   `cmd/adb-dashboard/main.go`, `docs/roadmap.md`, and
   `tests/cli/m1_s1_cli_test.go`.
 Changed:
 - `.codex/plans/current.md`
+- `.codex/cycles/history.md`
 Next: commit if authorized
-Blocker: none
-
-Phase: committed
-Result: committed
-Evidence:
-- `git commit -m "feat: add read-only devices api"` exited `0` and created
-  commit `cd421167a5a22242995de83598cb1d6dc0514441`.
-Changed:
-- `cmd/adb-dashboard/main.go`
-- `tests/cli/m1_s1_cli_test.go`
-Next: push branch
 Blocker: none
