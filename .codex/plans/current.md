@@ -5,8 +5,8 @@
 - Goal: Implement status API ADB summary.
 - Roadmap slice: `M2-S2: Status API ADB Summary`
 - Branch or work context: Git repository on branch
-  `agent/add-m2-adb-roadmap`; current `HEAD`
-  `955fc2995d820ca5137438b3eb263f83862e0ccf`; upstream tracking is
+  `agent/add-m2-adb-roadmap`; implementation commit
+  `f37f83da5797803c4502dfda2e8e82d26ff03626`; upstream tracking is
   `origin/agent/add-m2-adb-roadmap`.
 - Specification anchors: `CAP-009`, `CAP-010`, `AC-009-001`,
   `AC-009-002`, `AC-009-004`, `AC-010-004`, `AC-010-005`,
@@ -34,9 +34,9 @@
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`;
   `git diff --check`
-- Current phase: ready
+- Current phase: committed
 - Blocker: none
-- Next phase: commit M2-S2 if authorized, otherwise resume review/handoff.
+- Next phase: push branch if authorized.
 
 ## Pause State
 
@@ -70,11 +70,9 @@
 - Passing: focused M2-S2 HTTP test; full CLI package; race test suite; vet;
   diff whitespace check; real-path smoke for status ADB summary.
 - Failing: none known.
-- Not run: commit, push, PR, release, deployment.
+- Not run: push, PR, release, deployment.
 - Blocker: none.
-- Next phase: commit the M2-S2 verified work if authorized. If not committing,
-  resume by validating this handoff against current git status and rerunning
-  `git diff --check`; rerun focused checks if any source or test file changed.
+- Next phase: push branch if authorized.
 - Do not touch: unrelated user work if present after resume; no unrelated dirty
   files were observed at handoff time.
 
@@ -267,4 +265,17 @@ Evidence:
 Changed:
 - `.codex/plans/current.md`
 Next: commit M2-S2 if authorized
+Blocker: none
+
+Phase: committed
+Result: COMMITTED
+Evidence:
+- `git commit -m "feat: expose adb summary in status api"` created commit
+  `f37f83da5797803c4502dfda2e8e82d26ff03626`.
+- Commit contains the production status API ADB summary implementation, focused
+  HTTP process tests, roadmap sync, cycle history row, and ready cycle state.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: push branch if authorized
 Blocker: none
