@@ -705,7 +705,13 @@ func TestM1S4ServerLifecycleStatusUnknownRouteAndBrowserOpen(t *testing.T) {
 	if !strings.HasPrefix(contentType, "application/json") {
 		t.Fatalf("content type = %q, want application/json", contentType)
 	}
-	assertM1S4StatusJSON(t, body, addr, true)
+	assertM2S2StatusJSON(t, body, addr, true, map[string]any{
+		"status":           "available",
+		"executable":       fakeADBPath(t, env),
+		"version":          "Android Debug Bridge version 1.0.41",
+		"serverResponsive": "NIY",
+	})
+	assertFileContains(t, values["ADB_MARKER"], "version\n")
 
 	statusCode, contentType, body = httpGet(t, baseURL+"/api/v1/unknown")
 	if statusCode != http.StatusNotFound {
@@ -734,7 +740,169 @@ func TestM1S4ServerLifecycleStatusUnknownRouteAndBrowserOpen(t *testing.T) {
 	if !regexp.MustCompile(`\S+ INFO server stopped signal=terminated`).MatchString(result.stderr) {
 		t.Fatalf("stderr missing shutdown diagnostic: %q", result.stderr)
 	}
-	assertNoFutureStateSideEffectsAllowBrowser(t, env)
+	assertNoFutureStateSideEffectsAllowBrowserAndADB(t, env)
+}
+
+func TestM2S2StatusAPIADBSummary(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("available", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$@" >> "$ADB_MARKER"
+if [ "$1" != "version" ] || [ "$#" -ne 1 ]; then
+  echo "unexpected adb arguments" >&2
+  exit 17
+fi
+printf '\nAndroid Debug Bridge version status-success\nVersion 35.0.2\n'
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/status"})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		if !strings.HasPrefix(response.contentType, "application/json") {
+			t.Fatalf("content type = %q, want application/json", response.contentType)
+		}
+		assertM2S2StatusJSON(t, response.body, addr, false, map[string]any{
+			"status":           "available",
+			"executable":       adbPath,
+			"version":          "Android Debug Bridge version status-success",
+			"serverResponsive": "NIY",
+		})
+		assertFileContains(t, values["ADB_MARKER"], "version\n")
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+
+	t.Run("unavailable", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		env = removeFakeADB(t, env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/status"})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM2S2StatusJSON(t, response.body, addr, false, map[string]any{
+			"status":           "unavailable",
+			"executable":       nil,
+			"version":          nil,
+			"serverResponsive": "NIY",
+		})
+		assertPathAbsent(t, values["ADB_MARKER"])
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+
+	t.Run("version_failure", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$@" >> "$ADB_MARKER"
+echo "secret stderr $HOME $ADB_DASHBOARD_LOG_LEVEL" >&2
+exit 42
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/status"})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM2S2StatusJSON(t, response.body, addr, false, map[string]any{
+			"status":           "error",
+			"executable":       adbPath,
+			"version":          nil,
+			"serverResponsive": "NIY",
+		})
+		assertFileContains(t, values["ADB_MARKER"], "version\n")
+		for _, forbidden := range []string{"secret stderr", values["HOME"], "ADB_DASHBOARD"} {
+			if strings.Contains(string(response.body), forbidden) {
+				t.Fatalf("status JSON contains forbidden text %q: %s", forbidden, response.body)
+			}
+		}
+	})
+
+	t.Run("version_timeout", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$@" >> "$ADB_MARKER"
+exec sleep 10
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/status"})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM2S2StatusJSON(t, response.body, addr, false, map[string]any{
+			"status":           "error",
+			"executable":       adbPath,
+			"version":          nil,
+			"serverResponsive": "NIY",
+		})
+		assertFileContains(t, values["ADB_MARKER"], "version\n")
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+
+	t.Run("security_rejection_before_adb", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		for _, test := range []struct {
+			name     string
+			request  httpRequestSpec
+			wantCode string
+		}{
+			{
+				name: "foreign_host",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/status",
+					host:   "foreign.example",
+				},
+				wantCode: "forbidden_host",
+			},
+			{
+				name: "foreign_origin",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/status",
+					headers: map[string]string{
+						"Origin": "http://foreign.example",
+					},
+				},
+				wantCode: "forbidden_origin",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestJSON(t, test.request)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertPathAbsent(t, values["ADB_MARKER"])
+			})
+		}
+	})
 }
 
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
@@ -997,7 +1165,7 @@ func TestM1S6EmbeddedBrowserShellRendersBackendState(t *testing.T) {
 		"server: running",
 		"bind: " + addr,
 		"read-only: true",
-		"adb: NIY",
+		"adb: available",
 		"watcher: NIY",
 		"jobs: NIY",
 		"sessions: NIY",
@@ -1493,6 +1661,22 @@ func assertNoFutureStateSideEffectsAllowBrowser(t *testing.T, env []string) {
 	}
 }
 
+func assertNoFutureStateSideEffectsAllowBrowserAndADB(t *testing.T, env []string) {
+	t.Helper()
+
+	values := envMap(env)
+	assertFileContains(t, values["ADB_MARKER"], "version\n")
+	for _, path := range []string{
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "cache"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "projects"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "uploads"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "history"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "jobs"),
+	} {
+		assertPathAbsent(t, path)
+	}
+}
+
 func assertDirExists(t *testing.T, path string) {
 	t.Helper()
 
@@ -1581,7 +1765,7 @@ func assertPathAbsent(t *testing.T, path string) {
 	}
 }
 
-func assertM1S4StatusJSON(t *testing.T, body []byte, bind string, readOnly bool) {
+func assertM2S2StatusJSON(t *testing.T, body []byte, bind string, readOnly bool, wantADB map[string]any) {
 	t.Helper()
 
 	var got map[string]any
@@ -1603,12 +1787,7 @@ func assertM1S4StatusJSON(t *testing.T, body []byte, bind string, readOnly bool)
 		"readOnly":      readOnly,
 		"bind":          bind,
 	})
-	assertObject(t, got["adb"], map[string]any{
-		"status":           "NIY",
-		"executable":       nil,
-		"version":          nil,
-		"serverResponsive": "NIY",
-	})
+	assertObject(t, got["adb"], wantADB)
 	assertObject(t, got["watcher"], map[string]any{
 		"status":             "NIY",
 		"lastSuccessfulPoll": nil,
@@ -1630,7 +1809,7 @@ func assertM1S4StatusJSON(t *testing.T, body []byte, bind string, readOnly bool)
 		"available":   float64(0),
 		"unavailable": float64(0),
 	})
-	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD", "/home/", "/tmp/"}
+	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD"}
 	for _, text := range forbidden {
 		if strings.Contains(string(body), text) {
 			t.Fatalf("status JSON contains forbidden text %q: %s", text, body)

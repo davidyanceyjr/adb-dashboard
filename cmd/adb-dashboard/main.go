@@ -650,6 +650,31 @@ func printADBDoctorRows(stdout *os.File, adb adbDiscovery) {
 	fmt.Fprintf(stdout, "adbVersion: PASS version=%s\n", adb.version)
 }
 
+func (adb adbDiscovery) status() adbStatus {
+	if adb.execErr != "" {
+		return adbStatus{
+			Status:           "unavailable",
+			Executable:       nil,
+			Version:          nil,
+			ServerResponsive: "NIY",
+		}
+	}
+	if adb.versionErr != "" {
+		return adbStatus{
+			Status:           "error",
+			Executable:       &adb.path,
+			Version:          nil,
+			ServerResponsive: "NIY",
+		}
+	}
+	return adbStatus{
+		Status:           "available",
+		Executable:       &adb.path,
+		Version:          &adb.version,
+		ServerResponsive: "NIY",
+	}
+}
+
 func reportSource(cfg config) string {
 	sources := []string{
 		cfg.listen.source,
@@ -834,6 +859,7 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 			writeUnknownRoute(writer)
 			return
 		}
+		adb := discoverADBVersion()
 		writeJSON(writer, http.StatusOK, statusResponse{
 			Application: applicationStatus{
 				Name:             "adb-dashboard",
@@ -849,12 +875,7 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 				ReadOnly:      readOnly,
 				Bind:          bind,
 			},
-			ADB: adbStatus{
-				Status:           "NIY",
-				Executable:       nil,
-				Version:          nil,
-				ServerResponsive: "NIY",
-			},
+			ADB: adb.status(),
 			Watcher: watcherStatus{
 				Status:             "NIY",
 				LastSuccessfulPoll: nil,

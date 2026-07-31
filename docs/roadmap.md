@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.1.0
 - Current milestone: M2
-- Next eligible slice: M2-S1
+- Next eligible slice: M2-S3
 - Last reviewed: 2026-07-29
 
 This roadmap selects implementation order for the accepted local bootstrap and
@@ -387,7 +387,7 @@ Every implementation slice must:
 
 ### Slice M2-S1: Doctor ADB Executable And Version Discovery
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Make ADB executable and version discovery observable in `doctor`
   without performing device operations.
@@ -443,7 +443,7 @@ Every implementation slice must:
 
 ### Slice M2-S2: Status API ADB Summary
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Expose ADB executable and version discovery through the current
   status API without device inventory side effects.
