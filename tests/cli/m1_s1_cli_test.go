@@ -905,6 +905,272 @@ exec sleep 10
 	})
 }
 
+func TestM2S3ReadOnlyDevicesAPI(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("zero_devices", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version devices-zero\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n\n'
+  exit 0
+fi
+echo "unexpected adb arguments" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/devices"})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM2S3DevicesJSON(t, response.body, map[string]any{
+			"status":     "available",
+			"executable": adbPath,
+			"version":    "Android Debug Bridge version devices-zero",
+		}, []map[string]any{})
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n")
+	})
+
+	t.Run("multi_device_rows", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version devices-multi\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  printf 'ZY22 offline transport_id:2\n'
+  exit 0
+fi
+echo "unexpected adb arguments" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/devices"})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM2S3DevicesJSON(t, response.body, map[string]any{
+			"status":     "available",
+			"executable": adbPath,
+			"version":    "Android Debug Bridge version devices-multi",
+		}, []map[string]any{
+			{
+				"serial":      "emulator-5554",
+				"state":       "device",
+				"product":     "sdk_phone",
+				"model":       "Pixel_8",
+				"device":      "emu64",
+				"transportId": "1",
+			},
+			{
+				"serial":      "ZY22",
+				"state":       "offline",
+				"product":     nil,
+				"model":       nil,
+				"device":      nil,
+				"transportId": "2",
+			},
+		})
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n")
+	})
+
+	t.Run("adb_unavailable_before_devices", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		env = removeFakeADB(t, env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/devices"})
+
+		if response.statusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503; body = %s", response.statusCode, response.body)
+		}
+		assertAPIErrorEnvelope(t, response.body, "adb_unavailable")
+		assertPathAbsent(t, values["ADB_MARKER"])
+	})
+
+	t.Run("version_failure_before_devices", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  echo "secret stderr $HOME" >&2
+  exit 42
+fi
+if [ "$1" = "devices" ]; then
+  echo "devices must not run" >&2
+  exit 18
+fi
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/devices"})
+
+		if response.statusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503; body = %s", response.statusCode, response.body)
+		}
+		assertAPIErrorEnvelope(t, response.body, "adb_unavailable")
+		assertFileContains(t, values["ADB_MARKER"], "version\n")
+		assertResponseOmitsDevicesAndSecrets(t, response.body, values["HOME"])
+	})
+
+	t.Run("devices_failure", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version devices-failure\n'
+  exit 0
+fi
+echo "device command secret $HOME" >&2
+exit 42
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/devices"})
+
+		if response.statusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502; body = %s", response.statusCode, response.body)
+		}
+		assertAPIErrorEnvelope(t, response.body, "adb_devices_failed")
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n")
+		assertResponseOmitsDevicesAndSecrets(t, response.body, values["HOME"])
+	})
+
+	t.Run("malformed_devices_output", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version devices-malformed\n'
+  exit 0
+fi
+printf 'List of devices attached\n'
+printf 'serial-without-state\n'
+exit 0
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/devices"})
+
+		if response.statusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502; body = %s", response.statusCode, response.body)
+		}
+		assertAPIErrorEnvelope(t, response.body, "adb_devices_failed")
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n")
+		assertResponseOmitsDevicesAndSecrets(t, response.body, values["HOME"])
+	})
+
+	t.Run("devices_timeout", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version devices-timeout\n'
+  exit 0
+fi
+exec sleep 10
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{method: "GET", url: "http://" + addr + "/api/v1/devices"})
+
+		if response.statusCode != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502; body = %s", response.statusCode, response.body)
+		}
+		assertAPIErrorEnvelope(t, response.body, "adb_devices_failed")
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n")
+	})
+
+	t.Run("security_rejection_before_adb", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		for _, test := range []struct {
+			name     string
+			request  httpRequestSpec
+			wantCode string
+		}{
+			{
+				name: "foreign_host",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices",
+					host:   "foreign.example",
+				},
+				wantCode: "forbidden_host",
+			},
+			{
+				name: "foreign_origin",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices",
+					headers: map[string]string{
+						"Origin": "http://foreign.example",
+					},
+				},
+				wantCode: "forbidden_origin",
+			},
+			{
+				name: "foreign_absolute_url_host",
+				request: httpRequestSpec{
+					method:     "GET",
+					url:        baseURL + "/api/v1/devices",
+					requestURI: "http://foreign.example/api/v1/devices",
+				},
+				wantCode: "forbidden_absolute_url_host",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestJSON(t, test.request)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertPathAbsent(t, values["ADB_MARKER"])
+			})
+		}
+	})
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -1869,6 +2135,78 @@ func assertSecurityErrorEnvelope(t *testing.T, body []byte, code string) {
 			"requestId": nil,
 		},
 	})
+}
+
+func assertAPIErrorEnvelope(t *testing.T, body []byte, code string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal API error JSON: %v\nbody: %s", err, body)
+	}
+	assertObject(t, got, map[string]any{
+		"error": map[string]any{
+			"code":      code,
+			"message":   apiErrorMessage(code),
+			"details":   map[string]any{},
+			"requestId": nil,
+		},
+	})
+}
+
+func apiErrorMessage(code string) string {
+	switch code {
+	case "adb_unavailable":
+		return "ADB is unavailable"
+	case "adb_devices_failed":
+		return "ADB device inventory failed"
+	default:
+		return ""
+	}
+}
+
+func assertM2S3DevicesJSON(t *testing.T, body []byte, wantADB map[string]any, wantDevices []map[string]any) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal devices JSON: %v\nbody: %s", err, body)
+	}
+	assertKeys(t, got, "adb", "devices")
+	assertObject(t, got["adb"], wantADB)
+	devices, ok := got["devices"].([]any)
+	if !ok {
+		t.Fatalf("devices = %#v, want array", got["devices"])
+	}
+	if len(devices) != len(wantDevices) {
+		t.Fatalf("devices length = %d, want %d: %#v", len(devices), len(wantDevices), devices)
+	}
+	for index, want := range wantDevices {
+		assertObject(t, devices[index], want)
+	}
+	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD"}
+	for _, text := range forbidden {
+		if strings.Contains(string(body), text) {
+			t.Fatalf("devices JSON contains forbidden text %q: %s", text, body)
+		}
+	}
+}
+
+func assertResponseOmitsDevicesAndSecrets(t *testing.T, body []byte, secrets ...string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal error JSON: %v\nbody: %s", err, body)
+	}
+	if _, ok := got["devices"]; ok {
+		t.Fatalf("error response includes route-specific devices field: %s", body)
+	}
+	for _, forbidden := range append(secrets, "secret", "ADB_DASHBOARD") {
+		if forbidden != "" && strings.Contains(string(body), forbidden) {
+			t.Fatalf("error response contains forbidden text %q: %s", forbidden, body)
+		}
+	}
 }
 
 func assertNoTokenDisclosure(t *testing.T, body []byte, tokens bootstrapTokens) {

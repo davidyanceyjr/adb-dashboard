@@ -675,6 +675,85 @@ func (adb adbDiscovery) status() adbStatus {
 	}
 }
 
+func discoverADBDevices(adbPath string) ([]deviceInventory, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, adbPath, "devices", "-l")
+	output, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("timed out")
+	}
+	if err != nil {
+		return nil, err
+	}
+	devices, err := parseADBDevicesOutput(string(output))
+	if err != nil {
+		return nil, err
+	}
+	return devices, nil
+}
+
+func parseADBDevicesOutput(output string) ([]deviceInventory, error) {
+	lines := strings.Split(output, "\n")
+	headerSeen := false
+	devices := []deviceInventory{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !headerSeen {
+			if line != "List of devices attached" {
+				return nil, fmt.Errorf("malformed adb devices output")
+			}
+			headerSeen = true
+			continue
+		}
+		device, err := parseADBDeviceLine(line)
+		if err != nil {
+			return nil, err
+		}
+		devices = append(devices, device)
+	}
+	if !headerSeen {
+		return nil, fmt.Errorf("malformed adb devices output")
+	}
+	return devices, nil
+}
+
+func parseADBDeviceLine(line string) (deviceInventory, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 2 || strings.Contains(fields[0], ":") || strings.Contains(fields[1], ":") {
+		return deviceInventory{}, fmt.Errorf("malformed adb device row")
+	}
+	device := deviceInventory{
+		Serial: fields[0],
+		State:  fields[1],
+	}
+	for _, field := range fields[2:] {
+		key, value, ok := strings.Cut(field, ":")
+		if !ok || key == "" || value == "" {
+			return deviceInventory{}, fmt.Errorf("malformed adb device row")
+		}
+		switch key {
+		case "product":
+			device.Product = stringPointer(value)
+		case "model":
+			device.Model = stringPointer(value)
+		case "device":
+			device.Device = stringPointer(value)
+		case "transport_id":
+			device.TransportID = stringPointer(value)
+		}
+	}
+	return device, nil
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
 func reportSource(cfg config) string {
 	sources := []string{
 		cfg.listen.source,
@@ -736,6 +815,26 @@ type adbStatus struct {
 	Executable       *string `json:"executable"`
 	Version          *string `json:"version"`
 	ServerResponsive string  `json:"serverResponsive"`
+}
+
+type devicesResponse struct {
+	ADB     devicesADBStatus  `json:"adb"`
+	Devices []deviceInventory `json:"devices"`
+}
+
+type devicesADBStatus struct {
+	Status     string `json:"status"`
+	Executable string `json:"executable"`
+	Version    string `json:"version"`
+}
+
+type deviceInventory struct {
+	Serial      string  `json:"serial"`
+	State       string  `json:"state"`
+	Product     *string `json:"product"`
+	Model       *string `json:"model"`
+	Device      *string `json:"device"`
+	TransportID *string `json:"transportId"`
 }
 
 type watcherStatus struct {
@@ -899,6 +998,30 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 			},
 		})
 	})
+	mux.HandleFunc("/api/v1/devices", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			writeUnknownRoute(writer)
+			return
+		}
+		adb := discoverADBVersion()
+		if adb.hasFailure() {
+			writeAPIError(writer, http.StatusServiceUnavailable, "adb_unavailable", "ADB is unavailable")
+			return
+		}
+		devices, err := discoverADBDevices(adb.path)
+		if err != nil {
+			writeAPIError(writer, http.StatusBadGateway, "adb_devices_failed", "ADB device inventory failed")
+			return
+		}
+		writeJSON(writer, http.StatusOK, devicesResponse{
+			ADB: devicesADBStatus{
+				Status:     "available",
+				Executable: adb.path,
+				Version:    adb.version,
+			},
+			Devices: devices,
+		})
+	})
 	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
 		writeUnknownRoute(writer)
 	})
@@ -985,10 +1108,14 @@ func isLoopbackHost(host string) bool {
 }
 
 func writeForbidden(writer http.ResponseWriter, code string) {
-	writeJSON(writer, http.StatusForbidden, errorEnvelope{
+	writeAPIError(writer, http.StatusForbidden, code, "Request rejected by dashboard browser security policy")
+}
+
+func writeAPIError(writer http.ResponseWriter, status int, code, message string) {
+	writeJSON(writer, status, errorEnvelope{
 		Error: apiError{
 			Code:      code,
-			Message:   "Request rejected by dashboard browser security policy",
+			Message:   message,
 			Details:   map[string]any{},
 			RequestID: nil,
 		},
