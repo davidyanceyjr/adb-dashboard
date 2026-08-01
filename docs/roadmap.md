@@ -3,16 +3,17 @@
 ## Status
 
 - Roadmap status: Accepted
-- Roadmap version: 1.2.0
+- Roadmap version: 1.3.0
 - Specification source: `docs/SPECIFICATION.md`
-- Specification version: 1.2.0
-- Current milestone: M3
-- Next eligible slice: none
+- Specification version: 1.3.0
+- Current milestone: M4
+- Next eligible slice: M4-S1
 - Last reviewed: 2026-08-01
 
-This roadmap selects implementation order for the accepted local bootstrap and
-read-only ADB discovery and M3 read-only device inspection contract. It does
-not claim behavior is implemented.
+This roadmap selects implementation order for the accepted local bootstrap,
+read-only ADB discovery, M3 read-only device inspection, M4 read-only package
+inspection, and M5 local APK artifact intake and analysis contract. It does not
+claim behavior is implemented.
 
 ## Slice Rules
 
@@ -805,30 +806,666 @@ Every implementation slice must:
 - Completion evidence reference: `.codex/plans/current.md` and
   `.codex/cycles/history.md`.
 
+## Milestone M4: Read-Only Package Inspection
+
+### Slice M4-S1: Package Inventory API Success Path
+
+- Status: accepted
+- Mode: feature
+- Purpose: Return sorted package inventory for one current ready device without
+  package or device mutation.
+- Specification references: `CAP-013`, `CAP-016`, `AC-016-001`,
+  `AC-016-002`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-003`
+- Observable result: A same-origin HTTP client can request package inventory
+  for a ready device with absent, `all`, `third-party`, and `system` scopes and
+  observe sorted package JSON plus the exact allowed ADB command variant.
+- Primary acceptance boundary: HTTP request through the running server with
+  deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused HTTP test fails because
+  `/api/v1/devices/{serial}/packages` is absent, scope is ignored, package rows
+  are not parsed or sorted, or unsupported ADB commands are invoked.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused package inventory API test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake ADB package output, request
+  package inventory for absent, `all`, `third-party`, and `system` scopes,
+  inspect JSON ordering/count/scope, inspect fake-command logs, and inspect
+  filesystem side effects.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Dependencies: `M3-S3`.
+- In scope:
+  - `GET /api/v1/devices/{serial}/packages` success responses.
+  - `scope` values absent, `all`, `third-party`, and `system`.
+  - Bounded execution of the documented `pm list packages` variants.
+  - Package row parsing, sorting, count, and selected device fields.
+- Out of scope:
+  - Browser package UI, package detail, package mutation, install/uninstall,
+    file pull, package icons, retained package output, artifact behavior,
+    packaging, and deployment.
+- Risks:
+  - Accidentally invoking mutating package commands.
+  - Leaking command stderr, host paths, or token values.
+  - Treating current fake parser success as proof without command restrictions.
+- Stop conditions:
+  - Package inventory cannot be exercised through production routing with
+    deterministic fake ADB fixtures.
+  - Implementing the slice would require package mutation, file pull,
+    persistence, shell interpolation, or unsupported ADB commands.
+- Documentation synchronization: Update user-facing browser/API documentation
+  if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-016-001` and `AC-016-002` have green HTTP evidence, only
+  allowed ADB commands are invoked, no retained package output is written,
+  applicable broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M4-S2: Package Inventory API Failures And Security
+
+- Status: accepted
+- Mode: feature
+- Purpose: Fail closed for invalid package inventory requests, dependency
+  failures, malformed output, and rejected security requests.
+- Specification references: `CAP-013`, `CAP-016`, `AC-016-003`,
+  `AC-016-004`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-003`
+- Observable result: A same-origin or rejected HTTP client observes documented
+  package inventory error envelopes and no forbidden ADB or filesystem side
+  effects.
+- Primary acceptance boundary: HTTP request through the running server with
+  deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused HTTP test fails because
+  invalid scope, unavailable ADB, absent serial, non-ready device, command
+  failure, timeout, malformed output, oversized output, or rejected Host/Origin
+  produce the wrong status/code or invoke ADB when security rejects the request.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused package inventory negative-path test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake ADB fixtures and request
+  invalid scope, unavailable ADB, absent serial, non-ready device, command
+  failure, timeout, malformed output, oversized output, and rejected Host/Origin
+  cases; inspect responses, fake-command logs, and retained-output paths.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Dependencies: `M4-S1`.
+- In scope:
+  - `invalid_package_request`, `device_not_found`, `device_not_ready`,
+    `adb_unavailable`, `adb_packages_failed`, `forbidden_host`, and
+    `forbidden_origin` package inventory cases.
+  - Security rejection before ADB execution.
+  - No retained command output.
+- Out of scope:
+  - Browser package UI, package detail, install/uninstall, package icons,
+    artifact behavior, and unrelated error envelope redesign.
+- Risks:
+  - Broad command failures leaking stderr or host environment details.
+  - Security tests accidentally using same-origin requests.
+- Stop conditions:
+  - Negative paths cannot be exercised without host ADB or unsafe filesystem
+    side effects.
+  - The selected status/error mapping conflicts with `CAP-016`.
+- Documentation synchronization: Update user-facing browser/API documentation
+  if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-016-003` and `AC-016-004` have green HTTP evidence, rejected
+  security requests invoke no ADB process, no retained output is written,
+  applicable broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M4-S3: Browser Package Inventory View
+
+- Status: accepted
+- Mode: feature
+- Purpose: Make package inventory usable from the browser for the first current
+  ready device.
+- Specification references: `CAP-012`, `CAP-016`, `AC-016-001`,
+  `AC-016-002`, `AC-016-003`, `INV-FRONTEND-001`, `INV-SEC-004`,
+  `INV-DATA-003`
+- Observable result: A browser user can request package inventory, switch
+  supported scopes, and observe loading, empty, success, and failure states
+  derived from backend responses.
+- Primary acceptance boundary: Browser interaction through the running server
+  with deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused browser test fails
+  because the shell has no package inventory action, does not call the
+  production API, does not render scope/state/count/package rows, or exposes
+  unsupported install/uninstall/file-transfer controls.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused browser package inventory test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake ADB package output, open the
+  served shell, trigger package inventory for the first device and each scope,
+  inspect visible rows and failure states, inspect fake-command logs, and
+  inspect filesystem side effects.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking, browser automation
+  or deterministic browser-script support, and temporary executable fixtures.
+- Dependencies: `M4-S2`.
+- In scope:
+  - Browser package inventory control for the first current device.
+  - Scope selection for `all`, `third-party`, and `system`.
+  - Loading, empty, success, and failure states.
+  - Sensitive-value omission and unsupported-control absence.
+- Out of scope:
+  - Package detail, icons, install/uninstall, file transfer, package search,
+    retained package output, artifact behavior, and UI redesign unrelated to
+    package inventory.
+- Risks:
+  - Browser tests passing against static markup instead of backend-derived
+    state.
+  - Displaying stale package inventory after device refresh.
+- Stop conditions:
+  - Browser interaction cannot be exercised against the production backend.
+  - The UI would need unsupported package mutation or persistence to appear
+    complete.
+- Documentation synchronization: Update user-facing manual/browser
+  documentation if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: Browser evidence proves package inventory states are derived from
+  backend responses, no unsupported controls are exposed, applicable broad
+  checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M4-S4: Package Detail API
+
+- Status: accepted
+- Mode: feature
+- Purpose: Return bounded read-only detail for one valid package on one current
+  ready device.
+- Specification references: `CAP-013`, `CAP-017`, `AC-017-001`,
+  `AC-017-002`, `AC-017-003`, `INV-SEC-001`, `INV-SEC-003`,
+  `INV-DATA-003`
+- Observable result: A same-origin HTTP client can request package detail and
+  observe parsed fields, bounded summary lines, documented negative paths, and
+  security rejection before ADB execution.
+- Primary acceptance boundary: HTTP request through the running server with
+  deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused HTTP test fails because
+  `/api/v1/devices/{serial}/packages/{packageName}` is absent, invalid package
+  names are accepted, output is unbounded, package-not-found is not represented,
+  or rejected security requests invoke ADB.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused package detail API test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake ADB package detail output,
+  request detail for one valid package, inspect JSON, repeat invalid name,
+  absent serial, non-ready device, package-not-found, command failure, timeout,
+  malformed/oversized output, and rejected Host/Origin cases, and inspect
+  fake-command logs plus filesystem side effects.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Dependencies: `M4-S3`.
+- In scope:
+  - `GET /api/v1/devices/{serial}/packages/{packageName}`.
+  - Package-name validation.
+  - Bounded execution of `adb -s SERIAL shell dumpsys package PACKAGE_NAME`.
+  - Parsed package detail fields and bounded summary lines.
+  - Negative paths and rejected-security behavior.
+- Out of scope:
+  - Browser package detail, package inventory changes beyond what this route
+    needs, install/uninstall, file pull, icons, permission editing, artifact
+    behavior, and persistence.
+- Risks:
+  - Unbounded `dumpsys` output or stderr leakage.
+  - Package name validation allowing shell metacharacters or path-like input.
+- Stop conditions:
+  - Package detail cannot be exercised through production routing with
+    deterministic fake ADB fixtures.
+  - Implementing the slice would require shell interpolation, package mutation,
+    file pull, or retained device output.
+- Documentation synchronization: Update user-facing browser/API documentation
+  if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-017-001` through `AC-017-003` have green HTTP evidence, only
+  allowed ADB commands are invoked, output is bounded and not retained,
+  rejected security requests invoke no ADB process, applicable broad checks pass
+  or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M4-S5: Browser Package Detail View
+
+- Status: accepted
+- Mode: feature
+- Purpose: Make package detail usable from the browser for packages returned by
+  the inventory view.
+- Specification references: `CAP-016`, `CAP-017`, `AC-017-004`,
+  `INV-FRONTEND-001`, `INV-SEC-004`, `INV-DATA-003`
+- Observable result: A browser user can open package detail from a package row
+  and observe selected serial, package name, loading, parsed detail, bounded
+  summary, and failure states without mutation controls.
+- Primary acceptance boundary: Browser interaction through the running server
+  with deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused browser test fails
+  because package rows cannot open detail, package detail does not call the
+  production API, loading/failure states are missing, summary output is
+  unbounded, or unsupported install/uninstall/file-transfer controls appear.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused browser package detail test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake ADB inventory and detail
+  output, open the served shell, load packages, open one package detail, inspect
+  visible fields and failure states, inspect fake-command logs, and inspect
+  filesystem side effects.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking, browser automation
+  or deterministic browser-script support, and temporary executable fixtures.
+- Dependencies: `M4-S4`.
+- In scope:
+  - Browser package detail action from inventory rows.
+  - Selected serial and package-name display.
+  - Loading, parsed detail, bounded summary, and failure states.
+  - Unsupported-control absence.
+- Out of scope:
+  - Package mutation, install/uninstall, icons, search/filter beyond existing
+    scope selection, artifact analysis, retained package output, and broad UI
+    redesign.
+- Risks:
+  - Static UI state hiding backend failures.
+  - Stale detail after device refresh or package scope changes.
+- Stop conditions:
+  - Browser package detail cannot be exercised against the production backend.
+  - The UI would need package mutation or retained output to appear complete.
+- Documentation synchronization: Update user-facing manual/browser
+  documentation if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-017-004` has green browser evidence, detail state comes from
+  production backend responses, unsupported controls are absent, applicable
+  broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+## Milestone M5: Local APK Artifact Intake And Analysis
+
+### Slice M5-S1: Artifact Upload API
+
+- Status: accepted
+- Mode: feature
+- Purpose: Accept one local APK-like artifact upload and persist it atomically
+  under the resolved data directory.
+- Specification references: `CAP-018`, `AC-018-001`, `AC-018-002`,
+  `AC-018-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`,
+  `DATA-006`, `DATA-007`
+- Observable result: A same-origin HTTP client can upload one APK-like ZIP,
+  receive artifact metadata, restart the server, and observe the stored file and
+  metadata still present, while invalid and rejected requests leave no partial
+  final artifact.
+- Primary acceptance boundary: HTTP request through the running server with an
+  isolated data directory.
+- Expected red or baseline-green evidence: The focused HTTP/filesystem test
+  fails because `POST /api/v1/artifacts` is absent, upload metadata is not
+  persisted, invalid uploads are accepted, partial final files remain, or
+  rejected security requests store body data.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused artifact upload API test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with an isolated data directory, upload
+  a disposable APK-like ZIP, inspect HTTP `201` metadata and stored files,
+  restart the server, inspect stored file and metadata persistence, repeat
+  invalid upload and rejected Host/Origin cases, and inspect partial-file
+  absence.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking and writable
+  temporary filesystem.
+- Dependencies: `M4-S5`.
+- In scope:
+  - `POST /api/v1/artifacts`.
+  - Multipart request parsing for exactly one `artifact` file.
+  - `.apk` filename and ZIP signature validation.
+  - 256 MiB size limit enforcement.
+  - Atomic stored artifact file and metadata creation.
+  - Restart-visible artifact file and metadata persistence.
+  - Invalid upload, storage failure, and security rejection.
+- Out of scope:
+  - Browser upload UI, artifact detail UI, APK analysis, artifact deletion,
+    install, external network calls, artifact reports, indexes, jobs, and
+    cleanup policies beyond failed-upload temporary files.
+- Risks:
+  - Partial final files after interrupted or failed uploads.
+  - Writing outside the resolved data directory.
+  - Treating filename extension as enough without ZIP signature validation.
+- Stop conditions:
+  - Upload cannot be exercised through production routing with isolated
+    filesystem state.
+  - Implementing the slice would require external services, device mutation, or
+    unbounded request buffering.
+- Documentation synchronization: Update user-facing API/manual documentation if
+  it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-018-001` through `AC-018-003` have green HTTP/filesystem
+  evidence, restart inspection proves persistence, rejected security requests
+  store no body data, invalid uploads leave no partial final artifacts,
+  applicable broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M5-S2: Artifact Catalog And Detail API
+
+- Status: accepted
+- Mode: feature
+- Purpose: List and retrieve stored artifact metadata and current analysis
+  state through stable API responses.
+- Specification references: `CAP-018`, `CAP-020`, `AC-020-001`,
+  `AC-020-002`, `AC-020-003`, `INV-SEC-001`, `INV-SEC-003`,
+  `INV-DATA-004`, `DATA-006`, `DATA-007`
+- Observable result: A same-origin HTTP client can list zero or more artifacts
+  sorted newest first and retrieve one artifact's metadata without host path or
+  token disclosure.
+- Primary acceptance boundary: HTTP request through the running server with
+  isolated artifact storage.
+- Expected red or baseline-green evidence: The focused HTTP/filesystem test
+  fails because `GET /api/v1/artifacts` or
+  `GET /api/v1/artifacts/{artifactId}` is absent, sorting is unstable, unknown
+  artifact errors are incorrect, corrupt metadata is hidden as success, or host
+  paths leak.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused artifact catalog API test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with isolated empty storage, request the
+  empty catalog, upload two artifacts, request sorted catalog and detail,
+  simulate corrupt metadata, request unknown artifact and rejected Host/Origin
+  cases, and inspect filesystem side effects.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking and writable
+  temporary filesystem.
+- Dependencies: `M5-S1`.
+- In scope:
+  - `GET /api/v1/artifacts`.
+  - `GET /api/v1/artifacts/{artifactId}`.
+  - Empty and populated catalog.
+  - Newest-first sorting.
+  - Unknown artifact, corrupt metadata, and security rejection.
+- Out of scope:
+  - Browser artifact UI, APK analysis execution, artifact deletion, install,
+    reports, indexes, external services, and background jobs.
+- Risks:
+  - Returning absolute stored paths.
+  - Catalog reads masking corrupt metadata as an empty list.
+- Stop conditions:
+  - Catalog/detail cannot be exercised through production routing and isolated
+    persisted metadata.
+  - Required storage behavior conflicts with `CAP-018` or `CAP-020`.
+- Documentation synchronization: Update user-facing API/manual documentation if
+  it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-020-001` through `AC-020-003` have green HTTP/filesystem
+  evidence, no host paths or token values leak, applicable broad checks pass or
+  have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M5-S3: Artifact Analysis API
+
+- Status: accepted
+- Mode: feature
+- Purpose: Analyze one stored APK artifact locally with bounded fakeable
+  `aapt dump badging` execution and persist the latest ready result.
+- Specification references: `CAP-019`, `AC-019-001`, `AC-019-002`,
+  `AC-019-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`,
+  `DATA-006`, `DATA-007`
+- Observable result: A same-origin HTTP client can request analysis for a
+  stored artifact and observe parsed APK metadata, persisted ready analysis,
+  documented failure states, and security rejection before host-tool execution.
+- Primary acceptance boundary: HTTP request through the running server with
+  isolated artifact storage and deterministic fake `aapt`.
+- Expected red or baseline-green evidence: The focused HTTP/filesystem test
+  fails because `POST /api/v1/artifacts/{artifactId}/analyze` is absent,
+  `aapt` is not invoked through the allowed argument vector, parsed metadata is
+  not persisted, failures create false ready analysis, or rejected security
+  requests execute the host tool.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused artifact analysis API test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with a stored artifact and fake `aapt`,
+  request analysis, inspect JSON and persisted metadata, request artifact
+  detail, repeat unknown artifact, missing tool, failure, timeout, malformed
+  output, oversized output, and rejected Host/Origin cases, and inspect
+  fake-tool logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, and temporary executable fixtures.
+- Dependencies: `M5-S2`.
+- In scope:
+  - `POST /api/v1/artifacts/{artifactId}/analyze`.
+  - Bounded `aapt dump badging STORED_APK_PATH` execution.
+  - Parsing package metadata fields named by `CAP-019`.
+  - Persisted ready analysis.
+  - Unknown artifact, missing/failing/timed-out/malformed/oversized tool output,
+    and security rejection.
+- Out of scope:
+  - Browser artifact analysis UI, install, signing verification, malware
+    analysis, network lookups, reports, jobs, and artifact deletion.
+- Risks:
+  - Leaking stored filesystem paths or command stderr.
+  - Treating malformed tool output as ready analysis.
+  - Replacing prior good analysis with failed output.
+- Stop conditions:
+  - Analysis cannot be exercised through production routing with isolated
+    artifact storage and fake `aapt`.
+  - Implementing the slice would require external network services or device
+    mutation.
+- Documentation synchronization: Update user-facing API/manual documentation if
+  it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-019-001` through `AC-019-003` have green HTTP/filesystem
+  evidence, only the allowed host-tool command is invoked, no false ready
+  analysis is stored, rejected security requests invoke no host tool,
+  applicable broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M5-S4: Browser Artifact Upload And Catalog
+
+- Status: accepted
+- Mode: feature
+- Purpose: Make local artifact upload and catalog inspection usable from the
+  browser.
+- Specification references: `CAP-018`, `CAP-020`, `AC-018-001`,
+  `AC-018-002`, `AC-020-001`, `AC-020-002`, `AC-020-004`,
+  `INV-FRONTEND-001`, `INV-SEC-004`, `INV-DATA-004`
+- Observable result: A browser user can upload an APK-like artifact, see it in
+  the catalog, open its detail, refresh after restart-backed persistence, and
+  observe upload/catalog failure states without install or device controls.
+- Primary acceptance boundary: Browser interaction through the running server
+  with isolated artifact storage.
+- Expected red or baseline-green evidence: The focused browser test fails
+  because the shell has no artifact upload/catalog workflow, does not call the
+  production upload and catalog APIs, does not render persisted artifacts, or
+  exposes install/device mutation/external-service controls.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused browser artifact upload/catalog test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with isolated storage, open the served
+  shell, upload a disposable APK-like ZIP, inspect catalog and detail state,
+  refresh/restart and inspect persistence, repeat invalid upload and catalog
+  failure states, and inspect filesystem side effects.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, browser automation or deterministic browser-script support, and
+  disposable APK fixtures.
+- Dependencies: `M5-S3`.
+- In scope:
+  - Browser artifact upload control.
+  - Catalog refresh and artifact detail view.
+  - Pending/no-analysis state.
+  - Upload and catalog failure states.
+  - Unsupported-control absence.
+- Out of scope:
+  - Browser analysis trigger, artifact deletion, install, signing verification,
+    reports, jobs, external services, and broad UI redesign.
+- Risks:
+  - Browser tests passing against static markup instead of persisted backend
+    state.
+  - File inputs making deterministic browser tests brittle.
+- Stop conditions:
+  - Browser upload/catalog cannot be exercised against production backend and
+    isolated artifact storage.
+  - The UI would need install, external service, or device mutation behavior to
+    appear complete.
+- Documentation synchronization: Update user-facing manual/browser
+  documentation if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: Browser evidence proves upload/catalog/detail states are derived
+  from production backend responses and persisted artifact metadata, invalid
+  upload failure is visible, unsupported controls are absent, applicable broad
+  checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M5-S5: Browser Artifact Analysis View
+
+- Status: accepted
+- Mode: feature
+- Purpose: Let the browser trigger local APK analysis and render ready/failure
+  metadata states.
+- Specification references: `CAP-019`, `CAP-020`, `AC-019-001`,
+  `AC-019-002`, `AC-020-002`, `AC-020-005`, `INV-FRONTEND-001`,
+  `INV-SEC-004`, `INV-DATA-004`
+- Observable result: A browser user can trigger analysis for a stored artifact
+  and observe pending, ready parsed metadata, and failure states backed by the
+  production analysis API.
+- Primary acceptance boundary: Browser interaction through the running server
+  with isolated artifact storage and deterministic fake `aapt`.
+- Expected red or baseline-green evidence: The focused browser test fails
+  because artifact analysis cannot be triggered from the shell, the browser
+  invents ready metadata, failure states are missing, or install/external
+  service controls appear.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused browser artifact analysis test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with isolated storage and fake `aapt`,
+  upload an artifact, open the served shell, trigger analysis, inspect parsed
+  metadata and failure states, inspect persisted detail after refresh, and
+  inspect fake-tool logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, browser automation or deterministic browser-script support, fake
+  `aapt`, and disposable APK fixtures.
+- Dependencies: `M5-S4`.
+- In scope:
+  - Browser analyze action for one artifact.
+  - Pending, ready parsed metadata, and failure states.
+  - Refresh/detail state after persisted analysis.
+  - Unsupported-control absence.
+- Out of scope:
+  - Artifact deletion, install, signing verification, malware analysis,
+    external services, reports, jobs, and broad UI redesign.
+- Risks:
+  - Static ready state not backed by analysis route.
+  - Host tool stderr or paths leaking into browser state.
+- Stop conditions:
+  - Browser analysis cannot be exercised against production backend and fake
+    `aapt`.
+  - The UI would require external services, jobs, or install behavior to appear
+    complete.
+- Documentation synchronization: Update user-facing manual/browser
+  documentation if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: Browser evidence proves analysis states are derived from
+  production backend responses, ready metadata persists through detail refresh,
+  unsupported controls are absent, applicable broad checks pass or have
+  recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M5-S6: Explicit Artifact Deletion
+
+- Status: accepted
+- Mode: feature
+- Purpose: Delete one stored artifact and its analysis metadata explicitly and
+  safely through API and browser.
+- Specification references: `CAP-021`, `AC-021-001`, `AC-021-002`,
+  `AC-021-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`,
+  `DATA-006`, `DATA-007`
+- Observable result: A same-origin HTTP client and browser user can delete one
+  selected artifact, observe it removed from catalog state, and verify no
+  unrelated files or devices are touched.
+- Primary acceptance boundary: HTTP request and browser interaction through the
+  running server with isolated artifact storage.
+- Expected red or baseline-green evidence: The focused HTTP/browser/filesystem
+  test fails because `DELETE /api/v1/artifacts/{artifactId}` is absent, deletion
+  is not scoped, repeated deletion reports success, security rejection deletes
+  files, or browser catalog state remains stale.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused artifact deletion API/browser test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with isolated storage, upload and
+  analyze an artifact, delete it through API and browser, inspect catalog,
+  detail, and filesystem state, repeat invalid ID, unknown ID, deletion failure,
+  symlink/path escape, and rejected Host/Origin cases.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, browser automation or deterministic browser-script support, and
+  disposable artifact fixtures.
+- Dependencies: `M5-S5`.
+- In scope:
+  - `DELETE /api/v1/artifacts/{artifactId}`.
+  - Scoped deletion of one artifact directory.
+  - Invalid ID, unknown artifact, filesystem failure, symlink/path escape, and
+    security rejection.
+  - Browser delete action and catalog refresh.
+- Out of scope:
+  - Bulk deletion, retention schedules, background cleanup jobs, install,
+    external services, reports, and unrelated storage migrations.
+- Risks:
+  - Path traversal or symlink deletion outside artifact storage.
+  - Reporting deletion success while files remain.
+- Stop conditions:
+  - Deletion cannot be exercised with isolated filesystem side effects.
+  - Safe scoped deletion conflicts with the selected artifact storage layout.
+- Documentation synchronization: Update user-facing manual/browser/API
+  documentation if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-021-001` through `AC-021-003` have green HTTP/browser and
+  filesystem evidence, only the selected artifact directory is removed,
+  rejected security requests remove nothing, applicable broad checks pass or
+  have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
 ## Dependency Order
 
 ```text
 M1-S1 -> M1-S2 -> M1-S3 -> M1-S4 -> M1-S5 -> M1-S6
 M1-S6 -> M2-S1 -> M2-S2 -> M2-S3 -> M2-S4
 M2-S4 -> M3-S1 -> M3-S2 -> M3-S3
+M3-S3 -> M4-S1 -> M4-S2 -> M4-S3 -> M4-S4 -> M4-S5
+M4-S5 -> M5-S1 -> M5-S2 -> M5-S3 -> M5-S4 -> M5-S5 -> M5-S6
 ```
 
 ## Future Milestones
 
-Future mutating ADB, interactive device control, WebSocket streaming,
-host-tool, artifact, persistence, logging redaction, request-correlation, body
-parsing, upload, retention, cleanup, performance, migration, packaging,
-release, and deployment behavior requires a later accepted specification before
-roadmap slices are added.
+Future mutating ADB, interactive device control, WebSocket streaming, file
+transfer, install/uninstall workflows, artifact reporting beyond local APK
+metadata, logging redaction, request-correlation, performance, migration,
+packaging, release, and deployment behavior requires a later accepted
+specification before roadmap slices are added.
 
 ## Roadmap Acceptance Record
 
 - Audit result: ROADMAP ACCEPTED
 - Reviewed slices: `M1-S1` through `M1-S6`; `M2-S1` through `M2-S4`;
-  `M3-S1` through `M3-S3`
+  `M3-S1` through `M3-S3`; `M4-S1` through `M4-S5`; `M5-S1` through `M5-S6`
 - Blocking gaps: None for the accepted local bootstrap, read-only ADB
-  discovery, and M3 read-only device inspection contract.
+  discovery, M3 read-only device inspection, M4 read-only package inspection,
+  and M5 local APK artifact intake and analysis contract.
 - Evidence or review reference: Authored against `docs/SPECIFICATION.md`
-  version `1.2.0`, `docs/ROADMAP_GUIDE.md`,
+  version `1.3.0`, `docs/ROADMAP_GUIDE.md`,
   `docs/ROADMAP.template.md`, `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and
   repository source material available on 2026-08-01.

@@ -3,12 +3,13 @@
 ## Status
 
 - Contract status: Accepted
-- Specification version: 1.2.0
+- Specification version: 1.3.0
 - Product or system: ADB Dashboard
-- Version or milestone: Local bootstrap, read-only ADB discovery, and M3
-  read-only device inspection
+- Version or milestone: Local bootstrap, read-only ADB discovery, M3 read-only
+  device inspection, M4 read-only package inspection, and M5 local APK artifact
+  intake and analysis
 - Owners or decision authority: ADB Dashboard Project
-- Last reviewed: July 2026
+- Last reviewed: August 2026
 - Supersedes:
 
 This document defines intended externally observable behavior. It does not claim
@@ -21,11 +22,12 @@ ADB Dashboard is a local Linux developer tool that serves a browser interface
 for current dashboard status and read-only Android Debug Bridge inspection.
 
 The accepted current contract covers local bootstrap behavior, read-only ADB
-discovery and device inventory, and M3 read-only device inspection through
-explicit refresh, device detail, bounded logcat reads, and screenshot capture.
-Interactive sessions, file transfer, artifact analysis, optional host-tool
-execution, jobs, retained output, and persistence beyond startup directories are
-outside this specification until a later accepted capability defines them.
+discovery and device inventory, M3 read-only device inspection through explicit
+refresh, device detail, bounded logcat reads, and screenshot capture, M4
+read-only package inspection, and M5 local APK artifact intake and analysis.
+Interactive sessions, file transfer, device mutation, background jobs, retained
+device output, and persistence beyond the artifact contracts are outside this
+specification until a later accepted capability defines them.
 
 ## Scope
 
@@ -53,26 +55,33 @@ outside this specification until a later accepted capability defines them.
 - Read-only bounded `adb logcat -d` execution for one selected serial.
 - Read-only `adb exec-out screencap -p` execution for one selected serial.
 - Browser-visible device detail, logcat, and screenshot states.
+- Read-only package inventory and package detail for one selected serial.
+- Browser-visible package inventory and package detail states.
+- Local APK artifact upload, listing, detail, metadata extraction, browser
+  artifact states, and explicit artifact deletion.
 - Standard `NIY` behavior for recognized unavailable actions and status fields.
 
 ### Out Of Scope
 
 - Executing ADB commands other than those named by `CAP-010`, `CAP-011`,
-  `CAP-014`, and `CAP-015`.
+  `CAP-014`, `CAP-015`, `CAP-016`, and `CAP-017`.
 - Explicit `adb start-server`, `adb kill-server`, or ADB server lifecycle
   controls. `adb devices -l` may use the host ADB client's normal server
   behavior as documented by ADB.
 - Device selection and any device mutation.
 - Raw command execution, binary execution, PTY, WebSocket sessions, and shell.
 - File push or pull, package workflows, input, reboot, networking, process, or
-  system-state operations.
+  system-state operations beyond the read-only package inspection commands
+  named by `CAP-016` and `CAP-017`.
 - Logcat streaming, clearing, filtering beyond bounded query parameters, or
   retained log storage.
 - Screenshot mutation, screen recording, image annotation, or retained
   screenshot storage.
-- Host-tool discovery or execution.
+- Host-tool discovery or execution outside local APK analysis through
+  `CAP-019`.
 - Artifact project storage, uploads, analysis, indexes, reports, caches,
-  command history, retained output, and background jobs.
+  command history, retained output, and background jobs outside the local APK
+  artifact behavior defined by `CAP-018` through `CAP-021`.
 - Public OpenAPI documents, routes, commands, UI controls, settings, or
   configuration keys for out-of-scope behavior.
 
@@ -81,10 +90,12 @@ outside this specification until a later accepted capability defines them.
 | Actor or caller | Public interface | Trust or ownership boundary | Relevant capabilities |
 |---|---|---|---|
 | Local operator | CLI process invocation | User account running the process | `CAP-001` through `CAP-006`, `CAP-010`, `INV-NIY-001` |
-| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009`, `CAP-012` through `CAP-015` |
-| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `CAP-011`, `CAP-013` through `CAP-015`, `INV-NIY-001` |
+| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009`, `CAP-012` through `CAP-021` |
+| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `CAP-011`, `CAP-013` through `CAP-021`, `INV-NIY-001` |
 | Host filesystem | Config, data directory, temp directory | Files owned or selected by process user | `CAP-004`, `CAP-005`, `CAP-006` |
-| Host ADB client | `adb` process invocation | Executable resolved from process `PATH` | `CAP-010`, `CAP-011`, `CAP-013` through `CAP-015` |
+| Host filesystem | Local APK artifacts | Files under resolved data directory | `CAP-018`, `CAP-020`, `CAP-021` |
+| Host ADB client | `adb` process invocation | Executable resolved from process `PATH` | `CAP-010`, `CAP-011`, `CAP-013` through `CAP-017` |
+| Host APK analysis tool | `aapt` process invocation | Executable resolved from process `PATH` | `CAP-019` |
 
 ## Terminology
 
@@ -102,7 +113,7 @@ outside this specification until a later accepted capability defines them.
   response fields or side effects.
 - `INV-DATA-001`: Current startup may create only the resolved data directory
   and temp directory. It must not create project, artifact, cache, upload,
-  history, job, index, or retained-output paths.
+  history, job, index, or retained-output paths during startup.
 - `INV-NIY-001`: `NIY` is unavailable behavior, not requested-action success.
   Requested unavailable actions fail before external process execution, device
   mutation, project or artifact state writes, or session creation.
@@ -1776,6 +1787,569 @@ and error envelopes are stable for this specification version.
 
 - None.
 
+### CAP-016: Read-Only Package Inventory API
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can inspect installed
+package inventory for one current ready device without installing,
+uninstalling, clearing, stopping, or otherwise mutating applications.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. ADB discovery succeeds.
+The requested serial is present in fresh inventory and has state `device`.
+Requests use `GET /api/v1/devices/{serial}/packages`. Optional query
+`scope` is absent or one of `all`, `third-party`, or `system`; absent defaults
+to `all`.
+
+**Successful behavior:** The backend executes one bounded read-only package
+inventory command for the selected serial, parses recognized package rows, and
+returns package names, APK paths when reported, installer/user identifiers when
+reported, version code when reported, and the selected scope.
+
+**Output, response, event, or visible state:** HTTP `200` JSON with
+`device.serial`, `device.state`, and `packages.scope`, `packages.items`, and
+`packages.count`. Items are sorted by package name. Empty inventory returns
+HTTP `200` with an empty `items` array and count `0`.
+
+**Required side effects:** The backend may execute only `adb version`,
+`adb devices -l`, and one of these argument-vector commands:
+`adb -s SERIAL shell pm list packages -f -U --show-versioncode`,
+`adb -s SERIAL shell pm list packages -3 -f -U --show-versioncode`, or
+`adb -s SERIAL shell pm list packages -s -f -U --show-versioncode`.
+
+**Forbidden side effects:** Package inventory must not install, uninstall,
+clear, force-stop, disable, enable, launch, or pull files from the device. It
+must not retain command output or include command stderr, host filesystem paths,
+environment values, or token values in responses.
+
+**Errors and negative behavior:**
+
+- Invalid `scope` returns HTTP `400` with code `invalid_package_request`.
+- ADB unavailable or serial absent follows `CAP-013` errors.
+- If the selected device is not in state `device`, return HTTP `409` with code
+  `device_not_ready`.
+- Package command failure, timeout, malformed output, or output exceeding the
+  implementation's bounded limit returns HTTP `502` with code
+  `adb_packages_failed`.
+- Rejected Host or Origin requests return the standard security envelope before
+  ADB execution.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Inventory
+validation occurs before package command execution. Package execution has a
+bounded timeout. Command output is retained only in memory for the response.
+
+**Security, authorization, privacy, and data safety:** Package names and APK
+paths may reveal sensitive app inventory. They are served only through current
+same-origin local routes and are not logged or persisted by the dashboard.
+
+**Compatibility and versioning:** The route, query values, status codes, JSON
+field names, and error codes are stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-016-001`: Given a ready device and parseable package output, when package
+  inventory is requested, then HTTP `200` returns sorted package items, count,
+  scope, selected device fields, and no sensitive host or token values.
+- `AC-016-002`: Given `scope` is absent, `all`, `third-party`, or `system`,
+  when inventory is requested, then the documented ADB command variant is used
+  and no unsupported package mutation command is invoked.
+- `AC-016-003`: Given invalid scope, ADB unavailable, absent serial, non-ready
+  device state, command failure, timeout, malformed output, or oversized output,
+  when inventory is requested, then the documented status and error code are
+  returned and no retained output is written.
+- `AC-016-004`: Given a rejected Host or Origin package request, when handled,
+  then the standard security envelope is returned before any ADB process is
+  executed.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request through the running server.
+- Focused evidence expected: process/HTTP tests with fake ADB fixtures for
+  valid scopes, empty inventory, malformed output, unavailable ADB, absent
+  serial, non-ready device, command failure, timeout, oversized output, and
+  security rejection.
+- Real-path exercise: start the server with fake ADB package output, request
+  package inventory for each scope, inspect JSON and fake-command logs, and
+  inspect filesystem side effects.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Permitted deterministic substitutes: fake ADB executables.
+- Evidence that does not count: parser-only tests or static fixtures that do
+  not exercise production HTTP routing and ADB command restrictions.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-017: Read-Only Package Detail
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can inspect details for
+one package on one current ready device without mutating the package or device.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. ADB discovery succeeds.
+The requested serial is present in fresh inventory and has state `device`.
+Requests use `GET /api/v1/devices/{serial}/packages/{packageName}`.
+`packageName` must be non-empty, at most 255 bytes, and match Java-style package
+segments using ASCII letters, digits, and underscores separated by dots.
+
+**Successful behavior:** The backend validates the device and package name,
+executes a bounded read-only package detail command, extracts stable fields
+when present, and returns both parsed detail fields and bounded raw summary
+lines useful to an operator.
+
+**Output, response, event, or visible state:** HTTP `200` JSON with
+`device.serial`, `device.state`, `package.name`, optional `package.versionName`,
+optional `package.versionCode`, optional `package.installer`, optional
+`package.firstInstallTime`, optional `package.lastUpdateTime`, optional
+`package.requestedPermissions`, and `package.summaryLines` capped to a bounded
+line count.
+
+**Required side effects:** The backend may execute only `adb version`,
+`adb devices -l`, and
+`adb -s SERIAL shell dumpsys package PACKAGE_NAME` with an argument vector.
+
+**Forbidden side effects:** Package detail must not install, uninstall, clear,
+force-stop, disable, enable, launch, pull files, or write retained package
+state. It must not include command stderr, host filesystem paths, environment
+values, or token values in responses.
+
+**Errors and negative behavior:**
+
+- Invalid package names return HTTP `400` with code `invalid_package_request`.
+- ADB unavailable or serial absent follows `CAP-013` errors.
+- If the selected device is not in state `device`, return HTTP `409` with code
+  `device_not_ready`.
+- If the package is not reported by the command, return HTTP `404` with code
+  `package_not_found`.
+- Package command failure, timeout, malformed output, or output exceeding the
+  implementation's bounded limit returns HTTP `502` with code
+  `adb_package_detail_failed`.
+- Rejected Host or Origin requests return the standard security envelope before
+  ADB execution.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Device
+validation and package-name validation occur before package detail execution.
+Package detail execution has a bounded timeout. Command output is retained only
+in memory for the response.
+
+**Security, authorization, privacy, and data safety:** Package details may
+reveal installed apps and permissions. They are served only through current
+same-origin local routes and are not logged or persisted by the dashboard.
+
+**Compatibility and versioning:** The route, validation, status codes, JSON
+field names, and error codes are stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-017-001`: Given a ready device, valid package name, and parseable package
+  detail output, when package detail is requested, then HTTP `200` returns the
+  selected package fields, bounded summary lines, selected device fields, and no
+  sensitive host or token values.
+- `AC-017-002`: Given invalid package name, ADB unavailable, absent serial,
+  non-ready device state, package not found, command failure, timeout,
+  malformed output, or oversized output, when package detail is requested, then
+  the documented status and error code are returned and no retained output is
+  written.
+- `AC-017-003`: Given a rejected Host or Origin package detail request, when
+  handled, then the standard security envelope is returned before any ADB
+  process is executed.
+- `AC-017-004`: Given the browser opens package detail for a displayed package,
+  then it renders selected serial, package name, loading/failure states, parsed
+  detail fields when present, bounded summary lines, and no package mutation,
+  shell, file-transfer, or install controls.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request and browser interaction through the running
+  server.
+- Focused evidence expected: process/HTTP and browser-boundary tests with fake
+  ADB fixtures for parseable detail, invalid package names, unavailable ADB,
+  absent serial, non-ready device, not found, command failure, timeout,
+  oversized output, and security rejection.
+- Real-path exercise: start the server with fake ADB package detail output,
+  request package detail for one package, inspect JSON and browser state, repeat
+  negative cases, and inspect fake-command logs plus filesystem side effects.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Permitted deterministic substitutes: fake ADB executables and browser
+  automation.
+- Evidence that does not count: parser-only tests or browser tests that do not
+  exercise production backend requests.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-018: Local APK Artifact Intake
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can upload one APK-like
+artifact into the dashboard data directory for local analysis without sending
+it to external services or touching connected devices.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. The resolved data
+directory is available. Requests use `POST /api/v1/artifacts` with
+`multipart/form-data` containing exactly one file field named `artifact`.
+Accepted filenames end in `.apk` using a case-insensitive comparison. Maximum
+accepted file size is 256 MiB. The first bytes must identify a ZIP file.
+
+**Successful behavior:** The backend stores the uploaded file under the
+resolved data directory using a generated opaque artifact ID, computes SHA-256
+and byte size while streaming, and returns the artifact metadata. The write is
+atomic: a failed upload leaves no visible artifact record or partial final
+file.
+
+**Output, response, event, or visible state:** HTTP `201` JSON with
+`artifact.id`, `artifact.originalName`, `artifact.sizeBytes`,
+`artifact.sha256`, `artifact.contentType` when supplied, `artifact.createdAt`,
+and `artifact.analysisStatus` equal to `pending`.
+
+**Required side effects:** Create one artifact directory and one stored APK file
+under the resolved data directory, plus the minimal metadata needed to list and
+retrieve the artifact after process restart.
+
+**Forbidden side effects:** Artifact intake must not execute ADB, install the
+APK, open host tools, send network requests, write outside the resolved data
+directory, expose host filesystem paths in responses, or retain partial final
+files after failure.
+
+**Errors and negative behavior:**
+
+- Missing, duplicate, empty, non-APK, non-ZIP, or oversized artifact uploads
+  return HTTP `400` with code `invalid_artifact_upload`.
+- Unsupported media type returns HTTP `415` with code
+  `unsupported_artifact_media`.
+- Filesystem write or metadata persistence failure returns HTTP `507` with code
+  `artifact_storage_unavailable`.
+- Rejected Host or Origin requests return the standard security envelope before
+  reading or storing the body.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Security
+checks run before body parsing. File bytes are streamed to a temporary file in
+the selected artifact directory and atomically moved into place only after
+validation and hashing succeed. Cancellation or failure removes temporary files.
+
+**Security, authorization, privacy, and data safety:** APK artifacts may contain
+sensitive application data. They remain local under the configured data
+directory, are not logged, and are not transmitted externally.
+
+**Compatibility and versioning:** Artifact IDs are opaque and stable. Metadata
+field names, status codes, and error codes are stable for this specification
+version.
+
+#### Acceptance Criteria
+
+- `AC-018-001`: Given a valid APK-like ZIP upload, when artifact intake is
+  requested, then HTTP `201` returns artifact metadata and the stored artifact
+  file plus metadata remain present after process restart.
+- `AC-018-002`: Given missing, duplicate, empty, non-APK, non-ZIP, oversized, or
+  storage-failing uploads, when artifact intake is requested, then the
+  documented status and error code are returned and no partial final artifact is
+  visible.
+- `AC-018-003`: Given a rejected Host or Origin upload request, when handled,
+  then the standard security envelope is returned before the request body is
+  stored or any artifact metadata is created.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request through the running server with isolated data
+  directory.
+- Focused evidence expected: process/HTTP and filesystem tests for successful
+  upload, restart persistence, invalid uploads, storage failure, cancellation
+  or short body, and security rejection.
+- Real-path exercise: start the server with an isolated data directory, upload
+  a disposable APK-like ZIP, inspect response metadata, restart the server,
+  inspect stored artifact metadata and files, and inspect absence of partial
+  files.
+- Required environment: Linux host with loopback networking and writable
+  temporary filesystem.
+- Permitted deterministic substitutes: generated disposable ZIP/APK fixtures.
+- Evidence that does not count: metadata constructor tests without HTTP upload
+  and filesystem persistence.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-019: APK Artifact Metadata Analysis
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can analyze a stored APK
+artifact and view deterministic package metadata without installing it or
+sending it to external services.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. The artifact exists.
+Requests use `POST /api/v1/artifacts/{artifactId}/analyze`. The host analysis
+tool is `aapt` resolved from `PATH`.
+
+**Successful behavior:** The backend executes bounded local analysis with
+`aapt dump badging STORED_APK_PATH`, parses package name, version name, version
+code, SDK values, application label, and launchable activity when reported, and
+stores the latest analysis result for the artifact.
+
+**Output, response, event, or visible state:** HTTP `200` JSON with
+`artifact.id`, `artifact.analysisStatus` equal to `ready`, `analysis.tool`
+equal to `aapt`, optional parsed metadata fields, bounded warning lines when
+applicable, and `analysis.analyzedAt`.
+
+**Required side effects:** Execute only the local host tool command named
+above and write the latest analysis metadata under the artifact directory.
+
+**Forbidden side effects:** Analysis must not execute ADB, install or mutate an
+APK, send network requests, write outside the artifact directory, expose stored
+host paths, command stderr, environment values, or token values in responses, or
+delete the artifact file.
+
+**Errors and negative behavior:**
+
+- Unknown artifact ID returns HTTP `404` with code `artifact_not_found`.
+- Missing or failing `aapt`, timeout, malformed output, or oversized output
+  returns HTTP `502` with code `artifact_analysis_failed`.
+- Rejected Host or Origin requests return the standard security envelope before
+  host-tool execution.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Security
+checks run before artifact lookup and host-tool execution. Analysis has a
+bounded timeout. A failed analysis leaves the prior successful analysis, if any,
+unchanged and records no new ready result.
+
+**Security, authorization, privacy, and data safety:** Analysis remains local.
+Responses do not expose absolute stored paths or host environment details.
+
+**Compatibility and versioning:** The route, status codes, JSON field names,
+tool name, and error codes are stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-019-001`: Given a stored artifact and parseable `aapt` output, when
+  analysis is requested, then HTTP `200` returns parsed metadata, stores the
+  latest ready analysis, and exposes no host paths, stderr, environment values,
+  or tokens.
+- `AC-019-002`: Given unknown artifact ID, missing `aapt`, tool failure,
+  timeout, malformed output, or oversized output, when analysis is requested,
+  then the documented status and error code are returned and no false ready
+  analysis is stored.
+- `AC-019-003`: Given a rejected Host or Origin analysis request, when handled,
+  then the standard security envelope is returned before any host tool is
+  executed.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request through the running server with isolated
+  artifact storage and deterministic fake `aapt`.
+- Focused evidence expected: process/HTTP and filesystem tests for successful
+  analysis, persisted ready metadata, unknown artifact, missing/failing/timed
+  out/malformed/oversized tool output, and security rejection.
+- Real-path exercise: start the server with one stored artifact and fake
+  `aapt`, request analysis, inspect JSON, stored metadata, fake-tool logs, and
+  negative cases.
+- Required environment: Linux host with loopback networking, writable
+  temporary filesystem, and temporary executable fixtures.
+- Permitted deterministic substitutes: fake `aapt` executable and disposable
+  APK fixtures.
+- Evidence that does not count: parser-only tests or static analysis metadata
+  not produced through the production route.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-020: Artifact Catalog And Browser View
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can list stored APK
+artifacts, inspect one artifact's metadata and latest analysis, and trigger
+analysis from the browser.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. Artifact metadata may or
+may not exist. Requests use `GET /api/v1/artifacts`,
+`GET /api/v1/artifacts/{artifactId}`, and browser actions against those routes
+plus `CAP-018` and `CAP-019`.
+
+**Successful behavior:** The backend lists artifacts sorted newest first and
+returns one artifact's stored metadata and latest analysis when present. The
+browser renders upload, list, detail, pending, ready, and failure states using
+backend responses.
+
+**Output, response, event, or visible state:** List responses return
+`artifacts.items` and `artifacts.count`. Detail responses return `artifact` and
+optional `analysis`. Browser state shows artifact names, sizes, SHA-256,
+analysis status, parsed metadata when ready, and failure states.
+
+**Required side effects:** Browser upload and analyze actions use only the
+production routes defined by `CAP-018` and `CAP-019`.
+
+**Forbidden side effects:** Catalog and browser view must not execute ADB,
+install artifacts, send network requests, expose stored host paths, or invent
+analysis success when no ready analysis exists.
+
+**Errors and negative behavior:**
+
+- Unknown artifact ID returns HTTP `404` with code `artifact_not_found`.
+- Corrupt metadata that cannot be read returns HTTP `500` with code
+  `artifact_catalog_unavailable`.
+- Rejected Host or Origin requests return the standard security envelope before
+  artifact lookup or mutation.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Catalog
+reads current artifact metadata from disk for each request. Browser refresh
+replaces stale catalog state with the latest response.
+
+**Security, authorization, privacy, and data safety:** Browser and API
+responses omit absolute stored paths, host environment values, command stderr,
+and tokens.
+
+**Compatibility and versioning:** The routes, status codes, JSON field names,
+browser state labels, and error codes are stable for this specification
+version.
+
+#### Acceptance Criteria
+
+- `AC-020-001`: Given zero or more stored artifacts, when the artifact catalog
+  is requested, then HTTP `200` returns sorted artifact items, count, and no
+  host paths or token values.
+- `AC-020-002`: Given a known artifact with or without ready analysis, when
+  detail is requested, then HTTP `200` returns artifact metadata and the latest
+  analysis only when present.
+- `AC-020-003`: Given unknown artifact ID, corrupt metadata, or rejected Host or
+  Origin, when catalog or detail is requested, then the documented status and
+  error code are returned before forbidden side effects.
+- `AC-020-004`: Given the browser uploads an artifact or refreshes the catalog,
+  then it renders upload, catalog, detail, pending/no-analysis, and failure
+  states from backend responses and exposes no install, device mutation, shell,
+  file-transfer, or external-service controls.
+- `AC-020-005`: Given the browser triggers analysis for a stored artifact, then
+  it renders pending, ready parsed metadata, and failure states from backend
+  responses and exposes no install, device mutation, shell, file-transfer, or
+  external-service controls.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request and browser interaction through the running
+  server with isolated artifact storage.
+- Focused evidence expected: process/HTTP and browser-boundary tests for empty
+  and populated catalog, detail with and without analysis, corrupt metadata,
+  security rejection, browser upload/analyze success, and browser failure
+  states.
+- Real-path exercise: start the server with isolated artifact storage, upload
+  and analyze a disposable artifact, refresh the browser catalog, inspect
+  detail state, restart the server, and repeat catalog/detail checks.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, browser automation, and temporary executable fixtures.
+- Permitted deterministic substitutes: fake `aapt` executable and disposable
+  APK fixtures.
+- Evidence that does not count: static markup checks or catalog tests not
+  backed by persisted artifact metadata.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-021: Explicit Artifact Deletion
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can explicitly delete one
+stored APK artifact and its analysis metadata without touching connected
+devices or unrelated files.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. Requests use
+`DELETE /api/v1/artifacts/{artifactId}` for an opaque artifact ID previously
+returned by `CAP-018`.
+
+**Successful behavior:** The backend removes only the selected artifact
+directory and returns a deletion confirmation. Repeating deletion for the same
+ID returns not found.
+
+**Output, response, event, or visible state:** HTTP `200` JSON with
+`artifact.id` and `deleted` equal to `true`. Browser catalog no longer shows the
+artifact after refresh.
+
+**Required side effects:** Delete the selected artifact file and metadata under
+the resolved data directory.
+
+**Forbidden side effects:** Deletion must not follow symlinks out of the
+artifact root, delete files outside the selected artifact directory, execute ADB
+or host analysis tools, mutate devices, or report success if the selected
+artifact remains.
+
+**Errors and negative behavior:**
+
+- Unknown artifact ID returns HTTP `404` with code `artifact_not_found`.
+- Invalid artifact ID syntax returns HTTP `400` with code
+  `invalid_artifact_request`.
+- Filesystem deletion failure returns HTTP `500` with code
+  `artifact_delete_failed`.
+- Rejected Host or Origin requests return the standard security envelope before
+  filesystem deletion.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Security and
+ID validation occur before filesystem deletion. Deletion is scoped to one
+artifact directory beneath the artifact root.
+
+**Security, authorization, privacy, and data safety:** Deletion is explicit,
+local, scoped, and does not expose host paths or sensitive values.
+
+**Compatibility and versioning:** The route, status codes, JSON field names,
+and error codes are stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-021-001`: Given an existing artifact, when deletion is requested, then
+  HTTP `200` confirms deletion, the artifact disappears from catalog responses,
+  and only the selected artifact directory is removed.
+- `AC-021-002`: Given invalid artifact ID, unknown artifact ID, filesystem
+  deletion failure, or rejected Host or Origin, when deletion is requested, then
+  the documented status and error code are returned and no unrelated files are
+  removed.
+- `AC-021-003`: Given the browser deletes an artifact, then the browser refresh
+  shows the artifact absent and exposes no device mutation, install, shell,
+  file-transfer, or external-service controls.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request and browser interaction through the running
+  server with isolated artifact storage.
+- Focused evidence expected: process/HTTP, filesystem, and browser-boundary
+  tests for successful deletion, repeated deletion, invalid ID, deletion
+  failure, symlink/path escape protection, security rejection, and browser
+  refresh.
+- Real-path exercise: start the server with isolated artifact storage, upload
+  an artifact, delete it through the API and browser, inspect catalog response
+  and filesystem side effects, and repeat negative cases.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, browser automation, and disposable fixtures.
+- Permitted deterministic substitutes: generated APK fixtures.
+- Evidence that does not count: route-name tests or deletion tests that do not
+  inspect filesystem side effects.
+
+#### Blocking Open Questions
+
+- None.
+
 ### INV-NIY-001: Standard NIY Behavior
 
 **Contract status:** Current invariant
@@ -1876,6 +2450,8 @@ Documented environment variables:
 | `DATA-003` | explicit config file from `ADB_DASHBOARD_CONFIG` or `--config` | read | selected by operator | no writes | missing file is fatal | `ERR-004-001` or `ERR-004-002` |
 | `DATA-004` | resolved `server.data_dir` | create or validate directory | process user | directory may remain if later startup validation fails | no cleanup in current contract | `CAP-005` failure |
 | `DATA-005` | resolved `server.temp_dir` | create or validate directory | process user | directory may remain if startup succeeds or fails after creation | no cleanup in current contract | `CAP-005` failure |
+| `DATA-006` | `server.data_dir/artifacts/ARTIFACT_ID/original.apk` | write on upload, read for analysis, delete on explicit deletion | process user | written through temporary file then atomic move | retained until explicit artifact deletion | `CAP-018`, `CAP-019`, or `CAP-021` failure |
+| `DATA-007` | `server.data_dir/artifacts/ARTIFACT_ID/metadata.json` | write on upload and analysis, read for catalog/detail, delete on explicit deletion | process user | write replacement must not expose partial metadata | retained until explicit artifact deletion | `CAP-018`, `CAP-019`, `CAP-020`, or `CAP-021` failure |
 
 ## Public Interfaces And Output
 
@@ -1929,9 +2505,16 @@ The current API root is `/api/v1`. Current responses use JSON with content type
 - `GET /api/v1/devices/{serial}`
 - `GET /api/v1/devices/{serial}/logcat`
 - `GET /api/v1/devices/{serial}/screenshot`
+- `GET /api/v1/devices/{serial}/packages`
+- `GET /api/v1/devices/{serial}/packages/{packageName}`
+- `POST /api/v1/artifacts`
+- `GET /api/v1/artifacts`
+- `GET /api/v1/artifacts/{artifactId}`
+- `POST /api/v1/artifacts/{artifactId}/analyze`
+- `DELETE /api/v1/artifacts/{artifactId}`
 - unknown `/api/v1` route error handling
 
-No current route requires a request body.
+Only `POST /api/v1/artifacts` requires a request body.
 
 ### Exit Status
 
@@ -1956,8 +2539,12 @@ No current route requires a request body.
 - `INV-DATA-002`: Configuration failure must happen before startup directory
   creation.
 - `INV-DATA-003`: Current behavior may execute only the ADB commands named by
-  `CAP-010`, `CAP-011`, `CAP-014`, and `CAP-015`. It must not execute optional
-  host tools or other external device-operation commands.
+  `CAP-010`, `CAP-011`, `CAP-014`, `CAP-015`, `CAP-016`, and `CAP-017`. It
+  must not execute optional host tools or other external device-operation
+  commands.
+- `INV-DATA-004`: Artifact behavior may write only the artifact files and
+  metadata named by `DATA-006` and `DATA-007` under the resolved data
+  directory, and deletion may remove only one selected artifact directory.
 
 ## Compatibility And Migration
 
@@ -1965,7 +2552,7 @@ No current route requires a request body.
 - The HTTP server is local-only and uses plain HTTP on loopback.
 - Current command names, option names, configuration keys, environment variable
   names, exit-status meanings, doctor row names, API route paths, JSON field
-  names, and `NIY` function names are stable for specification version `1.2.0`.
+  names, and `NIY` function names are stable for specification version `1.3.0`.
 - Additional fields, routes, commands, UI controls, files, and configuration
   keys require a later accepted capability.
 - No persisted data schema or migration behavior exists in the current
@@ -1974,29 +2561,33 @@ No current route requires a request body.
 ## Known Limitations
 
 - The dashboard executes only `adb version`, `adb devices -l`, bounded
-  `adb -s SERIAL logcat -d`, and bounded
-  `adb -s SERIAL exec-out screencap -p` under this specification.
+  `adb -s SERIAL logcat -d`, bounded
+  `adb -s SERIAL exec-out screencap -p`, bounded package inventory/detail ADB
+  commands, and bounded local `aapt dump badging` artifact analysis under this
+  specification.
 - The dashboard does not implement the ADB wire protocol.
-- Device mutation, interactive ADB workflows, retained output, and host-tool
-  workflows are unavailable until later specifications define exact behavior.
+- Device mutation, interactive ADB workflows, retained device output, and
+  host-tool workflows other than local APK analysis are unavailable until later
+  specifications define exact behavior.
 - Fastboot is outside the current contract.
 
 ## Open Questions
 
-- None for `CAP-001` through `CAP-015` and `INV-NIY-001`.
+- None for `CAP-001` through `CAP-021` and `INV-NIY-001`.
 
-Future mutating ADB, interactive device control, WebSocket streaming,
-host-tool, artifact, persistence, logging redaction, request-correlation, body
-parsing, upload, retention, cleanup, performance, packaging, release,
-deployment, and migration behavior requires separate specification before it
-can be implemented.
+Future mutating ADB, interactive device control, WebSocket streaming, file
+transfer, install/uninstall workflows, artifact reporting beyond local APK
+metadata, logging redaction, request-correlation, performance, packaging,
+release, deployment, and migration behavior requires separate specification
+before it can be implemented.
 
 ## Specification Acceptance Record
 
 - Audit result: SPECIFICATION ACCEPTED
-- Reviewed capabilities: `CAP-001` through `CAP-015`; `INV-NIY-001`
-- Blocking gaps: None for the local bootstrap, read-only ADB discovery, and M3
-  read-only device inspection contract
+- Reviewed capabilities: `CAP-001` through `CAP-021`; `INV-NIY-001`
+- Blocking gaps: None for the local bootstrap, read-only ADB discovery, M3
+  read-only device inspection, M4 read-only package inspection, and M5 local
+  APK artifact intake and analysis contract
 - Evidence or review reference: Authored against
   `docs/SPECIFICATION_GUIDE.md`, `docs/SPECIFICATION.template.md`,
   `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and the source material available
