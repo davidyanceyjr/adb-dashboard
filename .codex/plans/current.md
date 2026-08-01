@@ -25,9 +25,9 @@
   constraints, and next eligible slice.
 - Broad verification commands: `git diff --check`; documentation consistency
   searches with `rg`.
-- Current phase: ready
+- Current phase: committed
 - Blocker: none
-- Next phase: commit
+- Next phase: none
 
 ## Phase Results
 
@@ -87,4 +87,15 @@ Evidence:
 Changed:
 - `.codex/plans/current.md`
 Next: commit
+Blocker: none
+
+Phase: committed
+Result: committed
+Evidence:
+- `git commit -m "docs: accept m3 read-only device inspection"` exited `0`
+  and created commit `fae28edf1dd9c7b6c9fc30bdb20b1c2afbf033a6`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: none
 Blocker: none
