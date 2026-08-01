@@ -30,9 +30,9 @@
 - Broad verification commands: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`;
   `git diff --check`.
-- Current phase: ready
+- Current phase: committed
 - Blocker: none
-- Next phase: commit
+- Next phase: push
 
 ## Phase Results
 
@@ -195,10 +195,20 @@ Evidence:
 - `RED CONFIRMED`, `BUILD APPLIED`, `GREEN VERIFIED`, `DOCS SYNCED`, and
   `REVIEW PASSED` are recorded above with exact commands and observed
   behavior.
-- No commit was made because commit authorization has not been given for this
-  cycle.
+- Commit was requested after review; commit evidence is recorded below.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
-Next: commit
+Next: committed
+Blocker: none
+
+Phase: committed
+Result: committed
+Evidence:
+- `git commit -m "feat: add m3 device logcat view"` created commit
+  `8f650b21e47c05e723d9b1c6092402150d8dcdb1`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: push
 Blocker: none
