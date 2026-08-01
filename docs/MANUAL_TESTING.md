@@ -3,12 +3,9 @@
 ## Scope
 
 These steps exercise the current verified implementation level through
-`M3-S2`: local CLI behavior, configuration and startup checks, loopback server
+`M3-S3`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
-detail, and bounded read-only logcat.
-
-`M3-S3` screenshot capture is planned but is not part of the current verified
-manual test scope.
+detail, bounded read-only logcat, and read-only PNG screenshot capture.
 
 ## Requirements
 
@@ -390,6 +387,62 @@ Expected result:
 - HTTP status is `403`.
 - Error code is `forbidden_origin`.
 
+## Device Screenshot API
+
+Request a PNG screenshot for the connected ready device:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/$SERIAL/screenshot" \
+  --output .codex/tmp/manual-screenshot-response.bin
+```
+
+Expected result:
+
+- HTTP status is `200`.
+- Response headers include `Content-Type: image/png`.
+- `.codex/tmp/manual-screenshot-response.bin` starts with PNG bytes.
+- The response body is image bytes, not a JSON envelope.
+- The response does not include bootstrap tokens, host environment variables,
+  host file paths, or command stderr.
+- No screenshot file or artifact state is retained in `$DATA_DIR`, `$TEMP_DIR`,
+  or `.codex/tmp` except the explicit curl output file above.
+
+Inspect the PNG signature:
+
+```sh
+xxd -l 8 .codex/tmp/manual-screenshot-response.bin
+```
+
+Expected result:
+
+- Output starts with `00000000: 8950 4e47 0d0a 1a0a`.
+
+Request screenshot for an absent serial:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/not-a-real-serial/screenshot"
+```
+
+Expected result:
+
+- HTTP status is `404`.
+- Error code is `device_not_found`.
+- Response has no route-specific `screenshot` field.
+
+Check screenshot security rejection:
+
+```sh
+curl -i -sS -H "Origin: http://foreign.example" \
+  "http://$ADDR/api/v1/devices/$SERIAL/screenshot"
+```
+
+Expected result:
+
+- HTTP status is `403`.
+- Error code is `forbidden_origin`.
+
 ## Browser UI
 
 Open the dashboard in a browser:
@@ -411,15 +464,15 @@ Expected result:
   `NIY`.
 - No bootstrap token values are visible.
 - No unsupported controls or text for shell, install, uninstall, transfer,
-  reboot, jobs, sessions, artifacts, or settings appear.
+  reboot, jobs, sessions, artifacts, screen recording, or settings appear.
 
 Click `refresh`.
 
 Expected result:
 
 - Device count and list refresh from current ADB inventory.
-- Stale detail and logcat visible state are cleared to unavailable until opened
-  again.
+- Stale detail, logcat, and screenshot visible state are cleared to unavailable
+  until opened again.
 
 Click `details`.
 
@@ -439,9 +492,22 @@ Expected result:
   `logcat: empty` when no lines are returned.
 - If ADB becomes unavailable or logcat fails, the logcat area shows
   `logcat: unavailable`.
-- No clear-log, stream, shell, screenshot, file-transfer, install, reboot, or
-  mutation control appears.
+- No clear-log, stream, shell, file-transfer, install, reboot, or mutation
+  control appears.
 - No logcat output is retained in repository data or temp directories.
+
+Click `screenshot`.
+
+Expected result:
+
+- Screenshot area first shows a loading state.
+- It then shows `screenshot: SERIAL`.
+- The latest image is visible in the browser as a PNG screenshot.
+- If ADB becomes unavailable, the device is no longer ready, or screenshot
+  capture fails, the screenshot area shows `screenshot: unavailable`.
+- No screen-recording, annotation, shell, file-transfer, install, reboot, or
+  mutation control appears.
+- No screenshot output is retained in repository data or temp directories.
 
 ## Non-Ready Device Observation
 
@@ -454,6 +520,12 @@ With that non-ready serial substituted for `$SERIAL`, logcat should return:
 - HTTP status `409`.
 - Error code `device_not_ready`.
 - No route-specific `logcat` field.
+
+With that non-ready serial substituted for `$SERIAL`, screenshot should return:
+
+- HTTP status `409`.
+- Error code `device_not_ready`.
+- No route-specific `screenshot` field.
 
 ## Shutdown
 
@@ -479,9 +551,9 @@ Expected result:
 Remove the disposable manual-test files when they are no longer needed:
 
 ```sh
-rm -rf .codex/tmp/manual-data .codex/tmp/manual-temp .codex/tmp/adb-dashboard
+rm -rf .codex/tmp/manual-data .codex/tmp/manual-temp \
+  .codex/tmp/manual-screenshot-response.bin .codex/tmp/adb-dashboard
 ```
 
 Do not remove `.codex/cache` directories; they may be used by repository test
 commands.
-
