@@ -31,9 +31,9 @@
 - Broad verification commands: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`;
   `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`;
   `git diff --check`.
-- Current phase: ready
+- Current phase: committed
 - Blocker: none
-- Next phase: commit
+- Next phase: none
 
 ## Phase Results
 
@@ -200,4 +200,17 @@ Evidence:
 Changed:
 - `.codex/plans/current.md`
 Next: commit
+Blocker: none
+
+Phase: committed
+Result: committed
+Evidence:
+- `git commit -m "feat: add m3 device screenshot view"` created commit
+  `3f6cca302dfcedcdf19400a26cd17813d5d62072`.
+- `git push origin main` pushed `main` from `5c5c976` to
+  `3f6cca302dfcedcdf19400a26cd17813d5d62072`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: none
 Blocker: none
