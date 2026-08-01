@@ -214,3 +214,110 @@ Changed:
 - `.codex/cycles/history.md`
 Next: none
 Blocker: none
+
+## Pause State
+
+- Current phase: committed after complete Milestone 3 documentation review.
+- Last valid result: `REVIEW PASSED` for complete Milestone 3 documentation
+  review.
+- Changed files:
+  - `.codex/plans/current.md`
+  - `.codex/cycles/history.md`
+  - `docs/MANUAL_TESTING.md`
+- Commands run:
+  - `git status --short --branch --untracked-files=all` exited `0` and showed
+    clean `## main...origin/main` before adding this handoff and `findings.md`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM3'`
+    exited `0`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+    exited `0`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
+    exited `0`.
+  - `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+    exited `0`.
+  - `git diff --check` exited `0`.
+  - `git diff --check fae28edf1dd9c7b6c9fc30bdb20b1c2afbf033a6^..HEAD`
+    exited `0` after commit `49b36988137c67cdd34184aa420378f1a9884bb7`.
+  - `rg -n 'M3-S2|M3-S3.*planned|screenshot capture is planned|No clear-log, stream, shell, screenshot|No unsupported controls.*screenshot' docs/MANUAL_TESTING.md`
+    exited `1` with no stale M3-S2, planned-screenshot, or
+    unsupported-screenshot-control matches.
+  - `git commit -m "docs: update m3 manual screenshot testing"` created commit
+    `49b36988137c67cdd34184aa420378f1a9884bb7`.
+- Passing:
+  - M3 focused integration tests.
+  - Full non-race test suite.
+  - Full race test suite.
+  - `go vet`.
+  - Current working-tree `git diff --check`.
+  - Milestone-range `git diff --check`.
+- Failing:
+  - none.
+- Not run:
+  - No live-device manual test was run.
+- Blocker: none.
+- Next phase: none.
+- Do not touch:
+  - Do not modify production code unless a new review finding requires it.
+  - Preserve unrelated user work if the next session starts with a dirty tree.
+
+Phase: documentation
+Result: DOCS SYNCED
+Evidence:
+- `docs/MANUAL_TESTING.md` now describes current verified scope through
+  `M3-S3`, including screenshot API success, PNG signature inspection,
+  absent-serial and security rejection checks, browser screenshot success and
+  failure states, non-ready screenshot behavior, and cleanup of the explicit
+  curl output file.
+- Stale statements that screenshot capture was planned or that screenshot
+  controls must be absent were removed.
+- `git diff --check` exited `0`.
+Changed:
+- `docs/MANUAL_TESTING.md`
+Next: review
+Blocker: none
+
+Phase: review
+Result: REVIEW PASSED
+Evidence:
+- The follow-up addressed only the complete Milestone 3 documentation review
+  findings from the handoff.
+- `docs/MANUAL_TESTING.md` is synchronized with verified `CAP-015` /
+  `AC-015-001` through `AC-015-004` behavior and no longer contradicts the
+  M3-S3 screenshot API or browser UI.
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM3'`
+  exited `0`.
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`
+  exited `0`.
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...`
+  exited `0`.
+- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`
+  exited `0`.
+- `git diff --check` exited `0`.
+- `git diff --check fae28edf1dd9c7b6c9fc30bdb20b1c2afbf033a6^..HEAD`
+  exited `0`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: ready
+Blocker: none
+
+Phase: ready
+Result: CYCLE READY
+Evidence:
+- `DOCS SYNCED` and `REVIEW PASSED` are recorded above with exact commands and
+  observed documentation changes.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: committed
+Blocker: none
+
+Phase: committed
+Result: committed
+Evidence:
+- `git commit -m "docs: update m3 manual screenshot testing"` created commit
+  `49b36988137c67cdd34184aa420378f1a9884bb7`.
+Changed:
+- `docs/MANUAL_TESTING.md`
+Next: none
+Blocker: none
