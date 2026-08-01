@@ -201,7 +201,7 @@ Phase: committed
 Result: committed
 Evidence:
 - `git commit -m "feat: add m3 device detail view"` created commit
-  `667ff751faf18dfc4032b9404e846c16c20c30a4`.
+  `66a27d60be8cbd707d057f04b28f93e668670a7e`.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
