@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.2.0
 - Current milestone: M3
-- Next eligible slice: M3-S2
+- Next eligible slice: M3-S3
 - Last reviewed: 2026-08-01
 
 This roadmap selects implementation order for the accepted local bootstrap and
@@ -684,7 +684,7 @@ Every implementation slice must:
 
 ### Slice M3-S2: Read-Only Device Logcat
 
-- Status: planned
+- Status: verified
 - Mode: feature
 - Purpose: Retrieve bounded read-only logcat text for one current ready device
   without streaming, clearing logs, or retaining output.

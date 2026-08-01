@@ -1220,7 +1220,6 @@ exit 17
 			"Android Debug Bridge version browser-devices",
 			"unexpected adb arguments",
 			"shell",
-			"logcat",
 			"install",
 			"uninstall",
 			"reboot",
@@ -1578,7 +1577,6 @@ exit 17
 			"Android Debug Bridge version browser-detail",
 			"unexpected adb arguments",
 			"shell",
-			"logcat",
 			"install",
 			"uninstall",
 			"reboot",
@@ -1640,6 +1638,423 @@ exit 17
 				t.Fatalf("rendered failure shell contains stale or forbidden text %q:\n%s", forbidden, rendered)
 			}
 		}
+	})
+}
+
+func TestM3S2DeviceLogcatAPI(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("returns_last_requested_lines_for_ready_device", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version logcat-success\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "logcat" ] && [ "$4" = "-d" ] && [ "$#" -eq 4 ]; then
+  echo "secret stderr $HOME" >&2
+  printf '08-01 10:00:00.000 I First: one\n'
+  printf '08-01 10:00:01.000 I Second: two\n'
+  printf '08-01 10:00:02.000 I Third: three\n'
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{
+			method: "GET",
+			url:    "http://" + addr + "/api/v1/devices/" + url.PathEscape("emulator-5554") + "/logcat?lines=2&format=plain",
+			headers: map[string]string{
+				"Origin": "http://" + addr,
+			},
+		})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM3S2LogcatJSON(t, response.body, map[string]any{
+			"serial": "emulator-5554",
+			"state":  "device",
+		}, []string{
+			"08-01 10:00:01.000 I Second: two",
+			"08-01 10:00:02.000 I Third: three",
+		}, true)
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n-s emulator-5554 logcat -d\n")
+		assertNoRetainedOutputPaths(t, env)
+		if strings.Contains(string(response.body), adbPath) || strings.Contains(string(response.body), values["HOME"]) || strings.Contains(string(response.body), "secret stderr") {
+			t.Fatalf("logcat response contains executable, host path, or stderr: %s", response.body)
+		}
+	})
+
+	t.Run("returns_empty_logcat_without_truncation", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version logcat-empty\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+exit 0
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{
+			method: "GET",
+			url:    "http://" + addr + "/api/v1/devices/" + url.PathEscape("emulator-5554") + "/logcat",
+		})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM3S2LogcatJSON(t, response.body, map[string]any{
+			"serial": "emulator-5554",
+			"state":  "device",
+		}, []string{}, false)
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n-s emulator-5554 logcat -d\n")
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("negative_paths_do_not_execute_or_retain_unavailable_output", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			query      string
+			envMutate  func(t *testing.T, env []string) []string
+			serial     string
+			wantStatus int
+			wantCode   string
+			wantMarker string
+		}{
+			{name: "invalid_lines", query: "?lines=0", serial: "emulator-5554", wantStatus: http.StatusBadRequest, wantCode: "invalid_logcat_request"},
+			{name: "invalid_format", query: "?format=json", serial: "emulator-5554", wantStatus: http.StatusBadRequest, wantCode: "invalid_logcat_request"},
+			{
+				name: "adb_unavailable",
+				envMutate: func(t *testing.T, env []string) []string {
+					return removeFakeADB(t, env)
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusServiceUnavailable,
+				wantCode:   "adb_unavailable",
+			},
+			{
+				name: "absent_serial",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version logcat-absent\n'
+  exit 0
+fi
+printf 'List of devices attached\nZY22 device transport_id:2\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusNotFound,
+				wantCode:   "device_not_found",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "non_ready_device",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version logcat-offline\n'
+  exit 0
+fi
+printf 'List of devices attached\nemulator-5554 offline transport_id:1\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusConflict,
+				wantCode:   "device_not_ready",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "logcat_failure",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version logcat-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+echo "secret logcat failure $HOME" >&2
+exit 42
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_logcat_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 logcat -d\n",
+			},
+			{
+				name: "invalid_utf8",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$ADB_MARKER\"\nif [ \"$1\" = \"version\" ]; then printf 'Android Debug Bridge version logcat-utf8\\n'; exit 0; fi\nif [ \"$1\" = \"devices\" ]; then printf 'List of devices attached\\nemulator-5554 device transport_id:1\\n'; exit 0; fi\nprintf '\\377\\376\\n'\n")
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_logcat_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 logcat -d\n",
+			},
+			{
+				name: "timeout",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version logcat-timeout\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+exec sleep 10
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_logcat_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 logcat -d\n",
+			},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				env := isolatedEnv(t)
+				values := envMap(env)
+				if test.envMutate != nil {
+					env = test.envMutate(t, env)
+				}
+				server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+				defer server.cleanup(t)
+
+				addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+				response := requestJSON(t, httpRequestSpec{
+					method: "GET",
+					url:    "http://" + addr + "/api/v1/devices/" + url.PathEscape(test.serial) + "/logcat" + test.query,
+				})
+
+				if response.statusCode != test.wantStatus {
+					t.Fatalf("status = %d, want %d; body = %s", response.statusCode, test.wantStatus, response.body)
+				}
+				assertAPIErrorEnvelope(t, response.body, test.wantCode)
+				assertResponseOmitsLogcatAndSecrets(t, response.body, values["HOME"])
+				assertNoRetainedOutputPaths(t, env)
+				if test.wantMarker == "" {
+					assertPathAbsent(t, values["ADB_MARKER"])
+				} else {
+					assertFileContains(t, values["ADB_MARKER"], test.wantMarker)
+				}
+			})
+		}
+	})
+
+	t.Run("security_rejection_before_adb", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		for _, test := range []struct {
+			name     string
+			request  httpRequestSpec
+			wantCode string
+		}{
+			{
+				name: "foreign_host",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554/logcat",
+					host:   "foreign.example",
+				},
+				wantCode: "forbidden_host",
+			},
+			{
+				name: "foreign_origin",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554/logcat",
+					headers: map[string]string{
+						"Origin": "http://foreign.example",
+					},
+				},
+				wantCode: "forbidden_origin",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestJSON(t, test.request)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertPathAbsent(t, values["ADB_MARKER"])
+			})
+		}
+	})
+}
+
+func TestM3S2BrowserDeviceLogcatView(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("opens_bounded_logcat_without_sensitive_or_unsupported_output", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-logcat\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "logcat" ] && [ "$4" = "-d" ]; then
+  echo "secret browser stderr $HOME" >&2
+  printf '08-01 10:00:00.000 I First: one\n'
+  printf '08-01 10:00:01.000 I Second: two\n'
+  exit 0
+fi
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--read-only", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-logcat-first", afterMS: 450},
+		})
+
+		want := "device-logcat=logcat: emulator-5554\n08-01 10:00:00.000 I First: one\n08-01 10:00:01.000 I Second: two"
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+		}
+		for _, forbidden := range []string{
+			"csrfToken",
+			"webSocketToken",
+			adbPath,
+			values["HOME"],
+			"Android Debug Bridge version browser-logcat",
+			"secret browser stderr",
+			"clear",
+			"stream",
+			"shell",
+			"screenshot",
+		} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered shell contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertFileContains(t, values["ADB_MARKER"], "version\nversion\ndevices -l\nversion\ndevices -l\n-s emulator-5554 logcat -d\n")
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("renders_empty_state", func(t *testing.T) {
+		env := isolatedEnv(t)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-logcat-empty\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device transport_id:1\n'
+  exit 0
+fi
+exit 0
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-logcat-first", afterMS: 450},
+		})
+
+		if !strings.Contains(rendered, "device-logcat=logcat: empty") {
+			t.Fatalf("rendered shell missing empty state\nrendered:\n%s", rendered)
+		}
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("renders_empty_and_failure_states", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-logcat-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device transport_id:1\n'
+  exit 0
+fi
+if [ -f "$HOME/fail-logcat" ]; then
+  echo "secret logcat failure $HOME" >&2
+  exit 42
+fi
+exit 0
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-logcat-first", afterMS: 450},
+			{touch: filepath.Join(values["HOME"], "fail-logcat"), afterMS: 650},
+			{id: "device-logcat-first", afterMS: 800},
+		})
+
+		if !strings.Contains(rendered, "device-logcat=logcat: unavailable") {
+			t.Fatalf("rendered shell missing failure state\nrendered:\n%s", rendered)
+		}
+		for _, forbidden := range []string{"secret logcat failure", values["HOME"]} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered failure shell contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertNoRetainedOutputPaths(t, env)
 	})
 }
 
@@ -2174,7 +2589,6 @@ func assertBrowserShellOmitsUnsupportedADBControls(t *testing.T, text string) {
 		"<form",
 		"href=",
 		"raw command",
-		"logcat",
 		"transfers",
 		"artifacts",
 		"reboot",
@@ -2198,7 +2612,6 @@ func assertM3S1BrowserShellOmitsUnsupportedControls(t *testing.T, text string) {
 		"<form",
 		"href=",
 		"raw command",
-		"logcat",
 		"transfers",
 		"artifacts",
 		"reboot",
@@ -2567,6 +2980,23 @@ func assertNoFutureStateSideEffectsAllowBrowserAndADB(t *testing.T, env []string
 	}
 }
 
+func assertNoRetainedOutputPaths(t *testing.T, env []string) {
+	t.Helper()
+
+	values := envMap(env)
+	for _, path := range []string{
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "cache"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "projects"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "uploads"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "history"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "jobs"),
+		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "logs"),
+		filepath.Join(values["XDG_RUNTIME_DIR"], "adb-dashboard", "logcat"),
+	} {
+		assertPathAbsent(t, path)
+	}
+}
+
 func assertDirExists(t *testing.T, path string) {
 	t.Helper()
 
@@ -2786,9 +3216,45 @@ func apiErrorMessage(code string) string {
 		return "ADB device inventory failed"
 	case "device_not_found":
 		return "Device not found"
+	case "invalid_logcat_request":
+		return "Invalid logcat request"
+	case "device_not_ready":
+		return "Device is not ready"
+	case "adb_logcat_failed":
+		return "ADB logcat failed"
 	default:
 		return ""
 	}
+}
+
+func assertM3S2LogcatJSON(t *testing.T, body []byte, wantDevice map[string]any, wantLines []string, wantTruncated bool) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal logcat JSON: %v\nbody: %s", err, body)
+	}
+	assertKeys(t, got, "device", "logcat")
+	assertObject(t, got["device"], wantDevice)
+	assertObject(t, got["logcat"], map[string]any{
+		"format":    "plain",
+		"lines":     stringSliceAsAny(wantLines),
+		"truncated": wantTruncated,
+	})
+	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD", "secret"}
+	for _, text := range forbidden {
+		if strings.Contains(string(body), text) {
+			t.Fatalf("logcat JSON contains forbidden text %q: %s", text, body)
+		}
+	}
+}
+
+func stringSliceAsAny(values []string) []any {
+	items := make([]any, 0, len(values))
+	for _, value := range values {
+		items = append(items, value)
+	}
+	return items
 }
 
 func assertM3S1DeviceDetailJSON(t *testing.T, body []byte, wantADB map[string]any, wantDevice map[string]any) {
@@ -2845,6 +3311,23 @@ func assertResponseOmitsDeviceAndSecrets(t *testing.T, body []byte, secrets ...s
 	}
 	if _, ok := got["device"]; ok {
 		t.Fatalf("error response includes route-specific device field: %s", body)
+	}
+	for _, forbidden := range append(secrets, "secret", "ADB_DASHBOARD") {
+		if forbidden != "" && strings.Contains(string(body), forbidden) {
+			t.Fatalf("error response contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+}
+
+func assertResponseOmitsLogcatAndSecrets(t *testing.T, body []byte, secrets ...string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal error JSON: %v\nbody: %s", err, body)
+	}
+	if _, ok := got["logcat"]; ok {
+		t.Fatalf("error response includes route-specific logcat field: %s", body)
 	}
 	for _, forbidden := range append(secrets, "secret", "ADB_DASHBOARD") {
 		if forbidden != "" && strings.Contains(string(body), forbidden) {

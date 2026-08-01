@@ -18,6 +18,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 )
@@ -694,6 +695,37 @@ func discoverADBDevices(adbPath string) ([]deviceInventory, error) {
 	return devices, nil
 }
 
+func discoverADBLogcat(adbPath, serial string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "logcat", "-d")
+	output, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("timed out")
+	}
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(output) {
+		return "", fmt.Errorf("invalid utf-8")
+	}
+	return string(output), nil
+}
+
+func lastLogcatLines(output string, limit int) ([]string, bool) {
+	output = strings.TrimSuffix(output, "\n")
+	if output == "" {
+		return []string{}, false
+	}
+	lines := strings.Split(output, "\n")
+	truncated := len(lines) > limit
+	if truncated {
+		lines = lines[len(lines)-limit:]
+	}
+	return lines, truncated
+}
+
 func parseADBDevicesOutput(output string) ([]deviceInventory, error) {
 	lines := strings.Split(output, "\n")
 	headerSeen := false
@@ -825,6 +857,22 @@ type devicesResponse struct {
 type deviceDetailResponse struct {
 	ADB    devicesADBStatus `json:"adb"`
 	Device deviceInventory  `json:"device"`
+}
+
+type logcatResponse struct {
+	Device logcatDevice  `json:"device"`
+	Logcat logcatPayload `json:"logcat"`
+}
+
+type logcatDevice struct {
+	Serial string `json:"serial"`
+	State  string `json:"state"`
+}
+
+type logcatPayload struct {
+	Format    string   `json:"format"`
+	Lines     []string `json:"lines"`
+	Truncated bool     `json:"truncated"`
 }
 
 type devicesADBStatus struct {
@@ -1033,6 +1081,11 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 			return
 		}
 		serialText := strings.TrimPrefix(request.URL.Path, "/api/v1/devices/")
+		if strings.HasSuffix(serialText, "/logcat") {
+			serialText = strings.TrimSuffix(serialText, "/logcat")
+			handleDeviceLogcat(writer, request, serialText)
+			return
+		}
 		serial, err := url.PathUnescape(serialText)
 		if err != nil || serial == "" || strings.Contains(serial, "/") {
 			writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
@@ -1067,6 +1120,79 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 		writeUnknownRoute(writer)
 	})
 	return securityPolicyHandler(bind, mux)
+}
+
+func handleDeviceLogcat(writer http.ResponseWriter, request *http.Request, serialText string) {
+	linesLimit, format, ok := parseLogcatQuery(request.URL.Query())
+	if !ok {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_logcat_request", "Invalid logcat request")
+		return
+	}
+	serial, err := url.PathUnescape(serialText)
+	if err != nil || serial == "" || strings.Contains(serial, "/") {
+		writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+		return
+	}
+	adb := discoverADBVersion()
+	if adb.hasFailure() {
+		writeAPIError(writer, http.StatusServiceUnavailable, "adb_unavailable", "ADB is unavailable")
+		return
+	}
+	devices, err := discoverADBDevices(adb.path)
+	if err != nil {
+		writeAPIError(writer, http.StatusBadGateway, "adb_devices_failed", "ADB device inventory failed")
+		return
+	}
+	for _, device := range devices {
+		if device.Serial != serial {
+			continue
+		}
+		if device.State != "device" {
+			writeAPIError(writer, http.StatusConflict, "device_not_ready", "Device is not ready")
+			return
+		}
+		output, err := discoverADBLogcat(adb.path, serial)
+		if err != nil {
+			writeAPIError(writer, http.StatusBadGateway, "adb_logcat_failed", "ADB logcat failed")
+			return
+		}
+		lines, truncated := lastLogcatLines(output, linesLimit)
+		writeJSON(writer, http.StatusOK, logcatResponse{
+			Device: logcatDevice{
+				Serial: device.Serial,
+				State:  device.State,
+			},
+			Logcat: logcatPayload{
+				Format:    format,
+				Lines:     lines,
+				Truncated: truncated,
+			},
+		})
+		return
+	}
+	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+}
+
+func parseLogcatQuery(values url.Values) (int, string, bool) {
+	linesLimit := 200
+	if linesValues, ok := values["lines"]; ok {
+		if len(linesValues) != 1 {
+			return 0, "", false
+		}
+		parsed, err := strconv.Atoi(linesValues[0])
+		if err != nil || parsed < 1 || parsed > 500 {
+			return 0, "", false
+		}
+		linesLimit = parsed
+	}
+	format := "plain"
+	if formatValues, ok := values["format"]; ok {
+		if len(formatValues) != 1 || formatValues[0] != "plain" {
+			return 0, "", false
+		}
+		format = formatValues[0]
+	}
+	return linesLimit, format, true
 }
 
 func newBootstrapResponse() (bootstrapResponse, error) {
@@ -1277,7 +1403,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>bind</dt><dd id="server-bind">bind: unavailable</dd>
       <dt>read-only</dt><dd id="server-read-only">read-only: unavailable</dd>
       <dt>adb</dt><dd id="adb-status">adb: unavailable</dd>
-      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div><div class="controls"><button type="button" id="devices-refresh">refresh</button><button type="button" id="device-detail-first">details</button></div><div id="device-detail" class="device-detail">detail: unavailable</div></dd>
+      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div><div class="controls"><button type="button" id="devices-refresh">refresh</button><button type="button" id="device-detail-first">details</button><button type="button" id="device-logcat-first">logcat</button></div><div id="device-detail" class="device-detail">detail: unavailable</div><div id="device-logcat" class="device-detail">logcat: unavailable</div></dd>
       <dt>watcher</dt><dd id="watcher-status">watcher: unavailable</dd>
       <dt>jobs</dt><dd id="jobs-status">jobs: unavailable</dd>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
@@ -1305,6 +1431,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("device-count", "devices: unavailable");
     setText("devices-list", "");
     setText("device-detail", "detail: unavailable");
+    setText("device-logcat", "logcat: unavailable");
     setText("watcher-status", "watcher: unavailable");
     setText("jobs-status", "jobs: unavailable");
     setText("sessions-status", "sessions: unavailable");
@@ -1317,6 +1444,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("device-count", "devices: unavailable");
     setText("devices-list", "");
     setText("device-detail", "detail: unavailable");
+    setText("device-logcat", "logcat: unavailable");
   };
 
   const loadDevices = async () => {
@@ -1337,6 +1465,7 @@ const dashboardShellHTML = `<!doctype html>
         return String(device.serial || "") + " " + String(device.state || "");
       }).join("\n"));
       setText("device-detail", "detail: unavailable");
+      setText("device-logcat", "logcat: unavailable");
     } catch (_) {
       if (sequence !== refreshSequence) {
         return;
@@ -1380,6 +1509,32 @@ const dashboardShellHTML = `<!doctype html>
     }
   };
 
+  const loadFirstDeviceLogcat = async () => {
+    const device = latestDevices[0];
+    if (!device || !device.serial) {
+      setText("device-logcat", "logcat: unavailable");
+      return;
+    }
+    setText("device-logcat", "logcat: loading");
+    try {
+      const logcatResponse = await fetch("/api/v1/devices/" + encodeURIComponent(device.serial) + "/logcat?lines=200&format=plain", { credentials: "same-origin" });
+      if (!logcatResponse.ok) {
+        throw new Error("logcat unavailable");
+      }
+      const payload = await logcatResponse.json();
+      const current = payload.device || {};
+      const logcat = payload.logcat || {};
+      const lines = Array.isArray(logcat.lines) ? logcat.lines : [];
+      if (lines.length === 0) {
+        setText("device-logcat", "logcat: empty");
+        return;
+      }
+      setText("device-logcat", ["logcat: " + String(current.serial || device.serial)].concat(lines.map((line) => String(line))).join("\n"));
+    } catch (_) {
+      setText("device-logcat", "logcat: unavailable");
+    }
+  };
+
   const loadStatus = async () => {
     try {
       const bootstrapResponse = await fetch("/api/v1/bootstrap", { credentials: "same-origin" });
@@ -1420,6 +1575,10 @@ const dashboardShellHTML = `<!doctype html>
     const detail = document.getElementById("device-detail-first");
     if (detail) {
       detail.addEventListener("click", loadFirstDeviceDetail);
+    }
+    const logcat = document.getElementById("device-logcat-first");
+    if (logcat) {
+      logcat.addEventListener("click", loadFirstDeviceLogcat);
     }
     loadStatus();
   });
