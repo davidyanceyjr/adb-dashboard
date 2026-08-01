@@ -57,7 +57,8 @@ outside this specification until a later accepted capability defines them.
 
 ### Out Of Scope
 
-- Executing ADB commands other than `adb version` and `adb devices -l`.
+- Executing ADB commands other than those named by `CAP-010`, `CAP-011`,
+  `CAP-014`, and `CAP-015`.
 - Explicit `adb start-server`, `adb kill-server`, or ADB server lifecycle
   controls. `adb devices -l` may use the host ADB client's normal server
   behavior as documented by ADB.
