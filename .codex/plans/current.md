@@ -4,8 +4,8 @@
 - Last cycle ID: CYCLE-20260801-M4-S1
 - Last mode: feature
 - Last roadmap slice: M4-S1: Package Inventory API Success Path
-- Last result: CYCLE READY
-- Last final phase: ready
+- Last result: committed
+- Last final phase: committed
 - Next eligible slice: M4-S2
 - Blocker: none
 
