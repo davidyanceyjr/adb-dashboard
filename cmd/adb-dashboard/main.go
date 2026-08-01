@@ -713,6 +713,37 @@ func discoverADBLogcat(adbPath, serial string) (string, error) {
 	return string(output), nil
 }
 
+func discoverADBScreenshot(adbPath, serial string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "exec-out", "screencap", "-p")
+	output, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("timed out")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !isPNG(output) {
+		return nil, fmt.Errorf("invalid png")
+	}
+	return output, nil
+}
+
+func isPNG(output []byte) bool {
+	prefix := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if len(output) < len(prefix) {
+		return false
+	}
+	for index, value := range prefix {
+		if output[index] != value {
+			return false
+		}
+	}
+	return true
+}
+
 func lastLogcatLines(output string, limit int) ([]string, bool) {
 	output = strings.TrimSuffix(output, "\n")
 	if output == "" {
@@ -1086,6 +1117,11 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 			handleDeviceLogcat(writer, request, serialText)
 			return
 		}
+		if strings.HasSuffix(serialText, "/screenshot") {
+			serialText = strings.TrimSuffix(serialText, "/screenshot")
+			handleDeviceScreenshot(writer, serialText)
+			return
+		}
 		serial, err := url.PathUnescape(serialText)
 		if err != nil || serial == "" || strings.Contains(serial, "/") {
 			writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
@@ -1168,6 +1204,43 @@ func handleDeviceLogcat(writer http.ResponseWriter, request *http.Request, seria
 				Truncated: truncated,
 			},
 		})
+		return
+	}
+	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+}
+
+func handleDeviceScreenshot(writer http.ResponseWriter, serialText string) {
+	serial, err := url.PathUnescape(serialText)
+	if err != nil || serial == "" || strings.Contains(serial, "/") {
+		writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+		return
+	}
+	adb := discoverADBVersion()
+	if adb.hasFailure() {
+		writeAPIError(writer, http.StatusServiceUnavailable, "adb_unavailable", "ADB is unavailable")
+		return
+	}
+	devices, err := discoverADBDevices(adb.path)
+	if err != nil {
+		writeAPIError(writer, http.StatusBadGateway, "adb_devices_failed", "ADB device inventory failed")
+		return
+	}
+	for _, device := range devices {
+		if device.Serial != serial {
+			continue
+		}
+		if device.State != "device" {
+			writeAPIError(writer, http.StatusConflict, "device_not_ready", "Device is not ready")
+			return
+		}
+		output, err := discoverADBScreenshot(adb.path, serial)
+		if err != nil {
+			writeAPIError(writer, http.StatusBadGateway, "adb_screenshot_failed", "ADB screenshot failed")
+			return
+		}
+		writer.Header().Set("Content-Type", "image/png")
+		writer.WriteHeader(http.StatusOK)
+		_, _ = writer.Write(output)
 		return
 	}
 	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
@@ -1393,6 +1466,13 @@ const dashboardShellHTML = `<!doctype html>
       margin-top: 8px;
       white-space: pre-line;
     }
+    .device-screenshot {
+      display: block;
+      margin-top: 8px;
+      max-width: min(100%, 420px);
+      height: auto;
+      border: 1px solid #cfd7e6;
+    }
   </style>
 </head>
 <body>
@@ -1403,7 +1483,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>bind</dt><dd id="server-bind">bind: unavailable</dd>
       <dt>read-only</dt><dd id="server-read-only">read-only: unavailable</dd>
       <dt>adb</dt><dd id="adb-status">adb: unavailable</dd>
-      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div><div class="controls"><button type="button" id="devices-refresh">refresh</button><button type="button" id="device-detail-first">details</button><button type="button" id="device-logcat-first">logcat</button></div><div id="device-detail" class="device-detail">detail: unavailable</div><div id="device-logcat" class="device-detail">logcat: unavailable</div></dd>
+      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div><div class="controls"><button type="button" id="devices-refresh">refresh</button><button type="button" id="device-detail-first">details</button><button type="button" id="device-logcat-first">logcat</button><button type="button" id="device-screenshot-first">screenshot</button></div><div id="device-detail" class="device-detail">detail: unavailable</div><div id="device-logcat" class="device-detail">logcat: unavailable</div><div id="device-screenshot" class="device-detail">screenshot: unavailable</div><img id="device-screenshot-image" class="device-screenshot" alt=""></dd>
       <dt>watcher</dt><dd id="watcher-status">watcher: unavailable</dd>
       <dt>jobs</dt><dd id="jobs-status">jobs: unavailable</dd>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
@@ -1420,6 +1500,15 @@ const dashboardShellHTML = `<!doctype html>
     }
   };
 
+  const setScreenshotImage = (src, alt) => {
+    const target = document.getElementById("device-screenshot-image");
+    if (!target) {
+      return;
+    }
+    target.src = src || "";
+    target.alt = alt || "";
+  };
+
   let latestDevices = [];
   let refreshSequence = 0;
 
@@ -1432,6 +1521,8 @@ const dashboardShellHTML = `<!doctype html>
     setText("devices-list", "");
     setText("device-detail", "detail: unavailable");
     setText("device-logcat", "logcat: unavailable");
+    setText("device-screenshot", "screenshot: unavailable");
+    setScreenshotImage("", "");
     setText("watcher-status", "watcher: unavailable");
     setText("jobs-status", "jobs: unavailable");
     setText("sessions-status", "sessions: unavailable");
@@ -1445,6 +1536,8 @@ const dashboardShellHTML = `<!doctype html>
     setText("devices-list", "");
     setText("device-detail", "detail: unavailable");
     setText("device-logcat", "logcat: unavailable");
+    setText("device-screenshot", "screenshot: unavailable");
+    setScreenshotImage("", "");
   };
 
   const loadDevices = async () => {
@@ -1466,6 +1559,8 @@ const dashboardShellHTML = `<!doctype html>
       }).join("\n"));
       setText("device-detail", "detail: unavailable");
       setText("device-logcat", "logcat: unavailable");
+      setText("device-screenshot", "screenshot: unavailable");
+      setScreenshotImage("", "");
     } catch (_) {
       if (sequence !== refreshSequence) {
         return;
@@ -1535,6 +1630,34 @@ const dashboardShellHTML = `<!doctype html>
     }
   };
 
+  const loadFirstDeviceScreenshot = async () => {
+    const device = latestDevices[0];
+    if (!device || !device.serial) {
+      setText("device-screenshot", "screenshot: unavailable");
+      setScreenshotImage("", "");
+      return;
+    }
+    setText("device-screenshot", "screenshot: loading");
+    setScreenshotImage("", "");
+    try {
+      const screenshotResponse = await fetch("/api/v1/devices/" + encodeURIComponent(device.serial) + "/screenshot", { credentials: "same-origin" });
+      if (!screenshotResponse.ok) {
+        throw new Error("screenshot unavailable");
+      }
+      const buffer = await screenshotResponse.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buffer));
+      let binary = "";
+      for (const value of bytes) {
+        binary += String.fromCharCode(value);
+      }
+      setScreenshotImage("data:image/png;base64," + btoa(binary), "screenshot: " + String(device.serial));
+      setText("device-screenshot", "screenshot: " + String(device.serial));
+    } catch (_) {
+      setText("device-screenshot", "screenshot: unavailable");
+      setScreenshotImage("", "");
+    }
+  };
+
   const loadStatus = async () => {
     try {
       const bootstrapResponse = await fetch("/api/v1/bootstrap", { credentials: "same-origin" });
@@ -1579,6 +1702,10 @@ const dashboardShellHTML = `<!doctype html>
     const logcat = document.getElementById("device-logcat-first");
     if (logcat) {
       logcat.addEventListener("click", loadFirstDeviceLogcat);
+    }
+    const screenshot = document.getElementById("device-screenshot-first");
+    if (screenshot) {
+      screenshot.addEventListener("click", loadFirstDeviceScreenshot);
     }
     loadStatus();
   });

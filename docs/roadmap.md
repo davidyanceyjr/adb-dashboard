@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.2.0
 - Current milestone: M3
-- Next eligible slice: M3-S3
+- Next eligible slice: none
 - Last reviewed: 2026-08-01
 
 This roadmap selects implementation order for the accepted local bootstrap and
@@ -745,7 +745,7 @@ Every implementation slice must:
 
 ### Slice M3-S3: Read-Only Device Screenshot Capture
 
-- Status: planned
+- Status: verified
 - Mode: feature
 - Purpose: Capture one PNG screenshot from a current ready device without
   retained files or device mutation.

@@ -1223,7 +1223,6 @@ exit 17
 			"install",
 			"uninstall",
 			"reboot",
-			"screenshot",
 		} {
 			if forbidden != "" && strings.Contains(rendered, forbidden) {
 				t.Fatalf("rendered shell contains forbidden text %q:\n%s", forbidden, rendered)
@@ -1580,7 +1579,6 @@ exit 17
 			"install",
 			"uninstall",
 			"reboot",
-			"screenshot",
 		} {
 			if forbidden != "" && strings.Contains(rendered, forbidden) {
 				t.Fatalf("rendered shell contains forbidden text %q:\n%s", forbidden, rendered)
@@ -1973,7 +1971,6 @@ exit 17
 			"clear",
 			"stream",
 			"shell",
-			"screenshot",
 		} {
 			if forbidden != "" && strings.Contains(rendered, forbidden) {
 				t.Fatalf("rendered shell contains forbidden text %q:\n%s", forbidden, rendered)
@@ -2050,6 +2047,388 @@ exit 0
 			t.Fatalf("rendered shell missing failure state\nrendered:\n%s", rendered)
 		}
 		for _, forbidden := range []string{"secret logcat failure", values["HOME"]} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered failure shell contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertNoRetainedOutputPaths(t, env)
+	})
+}
+
+func TestM3S3DeviceScreenshotAPI(t *testing.T) {
+	binary := buildDashboard(t)
+	pngBytes := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0, 'I', 'E', 'N', 'D'}
+
+	t.Run("returns_png_for_ready_device", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version screenshot-success\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "exec-out" ] && [ "$4" = "screencap" ] && [ "$5" = "-p" ] && [ "$#" -eq 5 ]; then
+  echo "secret screenshot stderr $HOME" >&2
+  printf '\211PNG\r\n\032\n\000\000\000\000IEND'
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{
+			method: "GET",
+			url:    "http://" + addr + "/api/v1/devices/" + url.PathEscape("emulator-5554") + "/screenshot",
+			headers: map[string]string{
+				"Origin": "http://" + addr,
+			},
+		})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		if response.contentType != "image/png" {
+			t.Fatalf("content-type = %q, want image/png", response.contentType)
+		}
+		if !bytes.Equal(response.body, pngBytes) {
+			t.Fatalf("screenshot bytes = %q, want PNG bytes %q", response.body, pngBytes)
+		}
+		if json.Valid(response.body) || strings.Contains(string(response.body), adbPath) || strings.Contains(string(response.body), values["HOME"]) || strings.Contains(string(response.body), "secret screenshot stderr") {
+			t.Fatalf("screenshot response is JSON or contains forbidden text: %q", response.body)
+		}
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n-s emulator-5554 exec-out screencap -p\n")
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("negative_paths_do_not_return_or_retain_images", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			envMutate  func(t *testing.T, env []string) []string
+			serial     string
+			wantStatus int
+			wantCode   string
+			wantMarker string
+		}{
+			{
+				name: "adb_unavailable",
+				envMutate: func(t *testing.T, env []string) []string {
+					return removeFakeADB(t, env)
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusServiceUnavailable,
+				wantCode:   "adb_unavailable",
+			},
+			{
+				name: "absent_serial",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version screenshot-absent\n'
+  exit 0
+fi
+printf 'List of devices attached\nZY22 device transport_id:2\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusNotFound,
+				wantCode:   "device_not_found",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "non_ready_device",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version screenshot-offline\n'
+  exit 0
+fi
+printf 'List of devices attached\nemulator-5554 offline transport_id:1\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusConflict,
+				wantCode:   "device_not_ready",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "screenshot_failure",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version screenshot-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+echo "secret screenshot failure $HOME" >&2
+exit 42
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_screenshot_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 exec-out screencap -p\n",
+			},
+			{
+				name: "empty_output",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version screenshot-empty\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+exit 0
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_screenshot_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 exec-out screencap -p\n",
+			},
+			{
+				name: "non_png_output",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version screenshot-text\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+printf 'not a png from %s\n' "$HOME"
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_screenshot_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 exec-out screencap -p\n",
+			},
+			{
+				name: "timeout",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version screenshot-timeout\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+exec sleep 10
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_screenshot_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 exec-out screencap -p\n",
+			},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				env := isolatedEnv(t)
+				values := envMap(env)
+				if test.envMutate != nil {
+					env = test.envMutate(t, env)
+				}
+				server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+				defer server.cleanup(t)
+
+				addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+				response := requestJSON(t, httpRequestSpec{
+					method: "GET",
+					url:    "http://" + addr + "/api/v1/devices/" + url.PathEscape(test.serial) + "/screenshot",
+				})
+
+				if response.statusCode != test.wantStatus {
+					t.Fatalf("status = %d, want %d; body = %s", response.statusCode, test.wantStatus, response.body)
+				}
+				assertAPIErrorEnvelope(t, response.body, test.wantCode)
+				assertResponseOmitsScreenshotAndSecrets(t, response.body, values["HOME"])
+				assertNoRetainedOutputPaths(t, env)
+				if test.wantMarker == "" {
+					assertPathAbsent(t, values["ADB_MARKER"])
+				} else {
+					assertFileContains(t, values["ADB_MARKER"], test.wantMarker)
+				}
+			})
+		}
+	})
+
+	t.Run("security_rejection_before_adb", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		for _, test := range []struct {
+			name     string
+			request  httpRequestSpec
+			wantCode string
+		}{
+			{
+				name: "foreign_host",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554/screenshot",
+					host:   "foreign.example",
+				},
+				wantCode: "forbidden_host",
+			},
+			{
+				name: "foreign_origin",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554/screenshot",
+					headers: map[string]string{
+						"Origin": "http://foreign.example",
+					},
+				},
+				wantCode: "forbidden_origin",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestJSON(t, test.request)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertPathAbsent(t, values["ADB_MARKER"])
+			})
+		}
+	})
+}
+
+func TestM3S3BrowserDeviceScreenshotView(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("captures_screenshot_without_sensitive_or_unsupported_output", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-screenshot\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "exec-out" ] && [ "$4" = "screencap" ] && [ "$5" = "-p" ]; then
+  echo "secret browser screenshot stderr $HOME" >&2
+  printf '\211PNG\r\n\032\n\000\000\000\000IEND'
+  exit 0
+fi
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--read-only", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-screenshot-first", afterMS: 450},
+		})
+
+		for _, want := range []string{
+			"device-screenshot=screenshot: emulator-5554",
+			"device-screenshot-image.src=data:image/png;base64,",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{
+			"csrfToken",
+			"webSocketToken",
+			adbPath,
+			values["HOME"],
+			"Android Debug Bridge version browser-screenshot",
+			"secret browser screenshot stderr",
+			"screen recording",
+			"file transfer",
+			"shell",
+			"mutation",
+		} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered shell contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertFileContains(t, values["ADB_MARKER"], "version\nversion\ndevices -l\nversion\ndevices -l\n-s emulator-5554 exec-out screencap -p\n")
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("renders_failure_state", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-screenshot-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device transport_id:1\n'
+  exit 0
+fi
+if [ -f "$HOME/fail-screenshot" ]; then
+  echo "secret screenshot failure $HOME" >&2
+  exit 42
+fi
+printf '\211PNG\r\n\032\n\000\000\000\000IEND'
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-screenshot-first", afterMS: 450},
+			{touch: filepath.Join(values["HOME"], "fail-screenshot"), afterMS: 650},
+			{id: "device-screenshot-first", afterMS: 800},
+		})
+
+		if !strings.Contains(rendered, "device-screenshot=screenshot: unavailable") {
+			t.Fatalf("rendered shell missing failure state\nrendered:\n%s", rendered)
+		}
+		for _, forbidden := range []string{"secret screenshot failure", values["HOME"]} {
 			if forbidden != "" && strings.Contains(rendered, forbidden) {
 				t.Fatalf("rendered failure shell contains forbidden text %q:\n%s", forbidden, rendered)
 			}
@@ -2425,7 +2804,15 @@ function element(id) {
   if (!elements[id]) {
     elements[id] = {
       textContent: "",
+      src: "",
+      alt: "",
       listeners: {},
+      setAttribute: (name, value) => {
+        elements[id][name] = String(value);
+      },
+      removeAttribute: (name) => {
+        elements[id][name] = "";
+      },
       addEventListener: (event, callback) => {
         elements[id].listeners[event] = callback;
       },
@@ -2561,6 +2948,12 @@ global.fetch = async (target, options = {}) => {
 setTimeout(() => {
   for (const key of Object.keys(elements).sort()) {
     console.log(key + "=" + elements[key].textContent);
+    if (elements[key].src) {
+      console.log(key + ".src=" + elements[key].src);
+    }
+    if (elements[key].alt) {
+      console.log(key + ".alt=" + elements[key].alt);
+    }
   }
 }, 1000);
 `, baseURL, script, strings.Join(actionLines, "\n"))
@@ -2594,7 +2987,6 @@ func assertBrowserShellOmitsUnsupportedADBControls(t *testing.T, text string) {
 		"reboot",
 		"install",
 		"uninstall",
-		"screenshot",
 		"shell",
 	} {
 		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
@@ -2617,7 +3009,6 @@ func assertM3S1BrowserShellOmitsUnsupportedControls(t *testing.T, text string) {
 		"reboot",
 		"install",
 		"uninstall",
-		"screenshot",
 		"shell",
 	} {
 		if strings.Contains(text, forbidden) {
@@ -2992,6 +3383,7 @@ func assertNoRetainedOutputPaths(t *testing.T, env []string) {
 		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "jobs"),
 		filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard", "logs"),
 		filepath.Join(values["XDG_RUNTIME_DIR"], "adb-dashboard", "logcat"),
+		filepath.Join(values["XDG_RUNTIME_DIR"], "adb-dashboard", "screenshots"),
 	} {
 		assertPathAbsent(t, path)
 	}
@@ -3222,6 +3614,8 @@ func apiErrorMessage(code string) string {
 		return "Device is not ready"
 	case "adb_logcat_failed":
 		return "ADB logcat failed"
+	case "adb_screenshot_failed":
+		return "ADB screenshot failed"
 	default:
 		return ""
 	}
@@ -3330,6 +3724,23 @@ func assertResponseOmitsLogcatAndSecrets(t *testing.T, body []byte, secrets ...s
 		t.Fatalf("error response includes route-specific logcat field: %s", body)
 	}
 	for _, forbidden := range append(secrets, "secret", "ADB_DASHBOARD") {
+		if forbidden != "" && strings.Contains(string(body), forbidden) {
+			t.Fatalf("error response contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+}
+
+func assertResponseOmitsScreenshotAndSecrets(t *testing.T, body []byte, secrets ...string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal error JSON: %v\nbody: %s", err, body)
+	}
+	if _, ok := got["screenshot"]; ok {
+		t.Fatalf("error response includes route-specific screenshot field: %s", body)
+	}
+	for _, forbidden := range append(secrets, "secret", "ADB_DASHBOARD", "PNG") {
 		if forbidden != "" && strings.Contains(string(body), forbidden) {
 			t.Fatalf("error response contains forbidden text %q: %s", forbidden, body)
 		}
