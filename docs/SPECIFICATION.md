@@ -1624,8 +1624,8 @@ mutate device state, or include command stderr in successful output.
 - ADB unavailable or serial absent follows `CAP-013` errors.
 - If the selected device is not in state `device`, return HTTP `409` with code
   `device_not_ready`.
-- Logcat command failure, timeout, or invalid text returns HTTP `502` with code
-  `adb_logcat_failed`.
+- Logcat command failure, timeout, or stdout that is not valid UTF-8 text
+  returns HTTP `502` with code `adb_logcat_failed`.
 - Rejected Host or Origin requests return the standard security envelope before
   ADB execution.
 
@@ -1649,9 +1649,9 @@ and JSON field names are stable for this specification version.
   `200` returns only the last requested lines, `truncated: true`, and no command
   stderr or host environment values.
 - `AC-014-002`: Given invalid `lines`, invalid `format`, ADB unavailable,
-  absent serial, non-ready device state, command failure, malformed output, or
-  timeout, when logcat is requested, then the documented status and error code
-  are returned and no retained output is written.
+  absent serial, non-ready device state, command failure, stdout that is not
+  valid UTF-8 text, or timeout, when logcat is requested, then the documented
+  status and error code are returned and no retained output is written.
 - `AC-014-003`: Given a rejected Host or Origin request for logcat, when the
   request is handled, then the standard security envelope is returned before
   any ADB process is executed.
