@@ -2437,6 +2437,103 @@ printf '\211PNG\r\n\032\n\000\000\000\000IEND'
 	})
 }
 
+func TestM4S1PackageInventoryAPISuccessScopes(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version packages-success\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "pm" ] && [ "$5" = "list" ] && [ "$6" = "packages" ]; then
+  case "$*" in
+    "-s emulator-5554 shell pm list packages -f -U --show-versioncode"|"-s emulator-5554 shell pm list packages -3 -f -U --show-versioncode"|"-s emulator-5554 shell pm list packages -s -f -U --show-versioncode")
+      echo "secret package stderr $HOME" >&2
+      printf 'package:/data/app/com.zeta/base.apk=com.zeta uid:10123 versionCode:7\n'
+      printf 'package:/system/app/Alpha/Alpha.apk=com.alpha uid:1000 versionCode:42\n'
+      exit 0
+      ;;
+  esac
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+	defer server.cleanup(t)
+
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+	tests := []struct {
+		name       string
+		query      string
+		wantScope  string
+		wantMarker string
+	}{
+		{name: "absent_scope", wantScope: "all", wantMarker: "-s emulator-5554 shell pm list packages -f -U --show-versioncode"},
+		{name: "all_scope", query: "?scope=all", wantScope: "all", wantMarker: "-s emulator-5554 shell pm list packages -f -U --show-versioncode"},
+		{name: "third_party_scope", query: "?scope=third-party", wantScope: "third-party", wantMarker: "-s emulator-5554 shell pm list packages -3 -f -U --show-versioncode"},
+		{name: "system_scope", query: "?scope=system", wantScope: "system", wantMarker: "-s emulator-5554 shell pm list packages -s -f -U --show-versioncode"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := requestJSON(t, httpRequestSpec{
+				method: "GET",
+				url:    baseURL + "/api/v1/devices/" + url.PathEscape("emulator-5554") + "/packages" + test.query,
+				headers: map[string]string{
+					"Origin": baseURL,
+				},
+			})
+			if response.statusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+			}
+			assertM4S1PackagesJSON(t, response.body, map[string]any{
+				"serial": "emulator-5554",
+				"state":  "device",
+			}, test.wantScope, []map[string]any{
+				{
+					"name":        "com.alpha",
+					"apkPath":     "/system/app/Alpha/Alpha.apk",
+					"userId":      "1000",
+					"versionCode": "42",
+				},
+				{
+					"name":        "com.zeta",
+					"apkPath":     "/data/app/com.zeta/base.apk",
+					"userId":      "10123",
+					"versionCode": "7",
+				},
+			})
+			if strings.Contains(string(response.body), adbPath) || strings.Contains(string(response.body), values["HOME"]) || strings.Contains(string(response.body), "secret package stderr") {
+				t.Fatalf("packages response contains executable, host path, or stderr: %s", response.body)
+			}
+			assertNoRetainedOutputPaths(t, env)
+		})
+	}
+	assertFileContains(t, values["ADB_MARKER"], strings.Join([]string{
+		"version",
+		"devices -l",
+		tests[0].wantMarker,
+		"version",
+		"devices -l",
+		tests[1].wantMarker,
+		"version",
+		"devices -l",
+		tests[2].wantMarker,
+		"version",
+		"devices -l",
+		tests[3].wantMarker,
+		"",
+	}, "\n"))
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -3639,6 +3736,44 @@ func assertM3S2LogcatJSON(t *testing.T, body []byte, wantDevice map[string]any, 
 	for _, text := range forbidden {
 		if strings.Contains(string(body), text) {
 			t.Fatalf("logcat JSON contains forbidden text %q: %s", text, body)
+		}
+	}
+}
+
+func assertM4S1PackagesJSON(t *testing.T, body []byte, wantDevice map[string]any, wantScope string, wantItems []map[string]any) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal packages JSON: %v\nbody: %s", err, body)
+	}
+	assertKeys(t, got, "device", "packages")
+	assertObject(t, got["device"], wantDevice)
+	packages, ok := got["packages"].(map[string]any)
+	if !ok {
+		t.Fatalf("packages = %#v, want object", got["packages"])
+	}
+	assertKeys(t, packages, "scope", "items", "count")
+	if packages["scope"] != wantScope {
+		t.Fatalf("packages.scope = %#v, want %q", packages["scope"], wantScope)
+	}
+	if packages["count"] != float64(len(wantItems)) {
+		t.Fatalf("packages.count = %#v, want %d", packages["count"], len(wantItems))
+	}
+	items, ok := packages["items"].([]any)
+	if !ok {
+		t.Fatalf("packages.items = %#v, want array", packages["items"])
+	}
+	if len(items) != len(wantItems) {
+		t.Fatalf("packages.items length = %d, want %d: %#v", len(items), len(wantItems), items)
+	}
+	for index, want := range wantItems {
+		assertObject(t, items[index], want)
+	}
+	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD", "secret"}
+	for _, text := range forbidden {
+		if strings.Contains(string(body), text) {
+			t.Fatalf("packages JSON contains forbidden text %q: %s", text, body)
 		}
 	}
 }

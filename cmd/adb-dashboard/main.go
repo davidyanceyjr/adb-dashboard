@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -731,6 +732,33 @@ func discoverADBScreenshot(adbPath, serial string) ([]byte, error) {
 	return output, nil
 }
 
+func discoverADBPackages(adbPath, serial, scope string) ([]packageItem, error) {
+	args := []string{"-s", serial, "shell", "pm", "list", "packages"}
+	switch scope {
+	case "third-party":
+		args = append(args, "-3")
+	case "system":
+		args = append(args, "-s")
+	}
+	args = append(args, "-f", "-U", "--show-versioncode")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, adbPath, args...)
+	output, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("timed out")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !utf8.Valid(output) {
+		return nil, fmt.Errorf("invalid utf-8")
+	}
+	return parseADBPackagesOutput(string(output))
+}
+
 func isPNG(output []byte) bool {
 	prefix := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 	if len(output) < len(prefix) {
@@ -742,6 +770,65 @@ func isPNG(output []byte) bool {
 		}
 	}
 	return true
+}
+
+func parseADBPackagesOutput(output string) ([]packageItem, error) {
+	items := []packageItem{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		item, err := parseADBPackageLine(line)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
+	return items, nil
+}
+
+func parseADBPackageLine(line string) (packageItem, error) {
+	if !strings.HasPrefix(line, "package:") {
+		return packageItem{}, fmt.Errorf("malformed package row")
+	}
+	fields := strings.Fields(strings.TrimPrefix(line, "package:"))
+	if len(fields) == 0 {
+		return packageItem{}, fmt.Errorf("malformed package row")
+	}
+	item := packageItem{}
+	if apkPath, name, ok := strings.Cut(fields[0], "="); ok {
+		if apkPath == "" || name == "" {
+			return packageItem{}, fmt.Errorf("malformed package row")
+		}
+		item.APKPath = stringPointer(apkPath)
+		item.Name = name
+	} else {
+		item.Name = fields[0]
+	}
+	if item.Name == "" {
+		return packageItem{}, fmt.Errorf("malformed package row")
+	}
+	for _, field := range fields[1:] {
+		key, value, ok := strings.Cut(field, ":")
+		if !ok || key == "" || value == "" {
+			return packageItem{}, fmt.Errorf("malformed package row")
+		}
+		switch key {
+		case "uid":
+			item.UserID = stringPointer(value)
+		case "versionCode":
+			item.VersionCode = stringPointer(value)
+		case "installer":
+			item.Installer = stringPointer(value)
+		default:
+			return packageItem{}, fmt.Errorf("malformed package row")
+		}
+	}
+	return item, nil
 }
 
 func lastLogcatLines(output string, limit int) ([]string, bool) {
@@ -904,6 +991,30 @@ type logcatPayload struct {
 	Format    string   `json:"format"`
 	Lines     []string `json:"lines"`
 	Truncated bool     `json:"truncated"`
+}
+
+type packagesResponse struct {
+	Device   packageDevice  `json:"device"`
+	Packages packagePayload `json:"packages"`
+}
+
+type packageDevice struct {
+	Serial string `json:"serial"`
+	State  string `json:"state"`
+}
+
+type packagePayload struct {
+	Scope string        `json:"scope"`
+	Items []packageItem `json:"items"`
+	Count int           `json:"count"`
+}
+
+type packageItem struct {
+	Name        string  `json:"name"`
+	APKPath     *string `json:"apkPath,omitempty"`
+	Installer   *string `json:"installer,omitempty"`
+	UserID      *string `json:"userId,omitempty"`
+	VersionCode *string `json:"versionCode,omitempty"`
 }
 
 type devicesADBStatus struct {
@@ -1117,6 +1228,11 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 			handleDeviceLogcat(writer, request, serialText)
 			return
 		}
+		if strings.HasSuffix(serialText, "/packages") {
+			serialText = strings.TrimSuffix(serialText, "/packages")
+			handleDevicePackages(writer, request, serialText)
+			return
+		}
 		if strings.HasSuffix(serialText, "/screenshot") {
 			serialText = strings.TrimSuffix(serialText, "/screenshot")
 			handleDeviceScreenshot(writer, serialText)
@@ -1209,6 +1325,56 @@ func handleDeviceLogcat(writer http.ResponseWriter, request *http.Request, seria
 	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
 }
 
+func handleDevicePackages(writer http.ResponseWriter, request *http.Request, serialText string) {
+	scope, ok := parsePackageScope(request.URL.Query())
+	if !ok {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_package_request", "Invalid package request")
+		return
+	}
+	serial, err := url.PathUnescape(serialText)
+	if err != nil || serial == "" || strings.Contains(serial, "/") {
+		writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+		return
+	}
+	adb := discoverADBVersion()
+	if adb.hasFailure() {
+		writeAPIError(writer, http.StatusServiceUnavailable, "adb_unavailable", "ADB is unavailable")
+		return
+	}
+	devices, err := discoverADBDevices(adb.path)
+	if err != nil {
+		writeAPIError(writer, http.StatusBadGateway, "adb_devices_failed", "ADB device inventory failed")
+		return
+	}
+	for _, device := range devices {
+		if device.Serial != serial {
+			continue
+		}
+		if device.State != "device" {
+			writeAPIError(writer, http.StatusConflict, "device_not_ready", "Device is not ready")
+			return
+		}
+		items, err := discoverADBPackages(adb.path, serial, scope)
+		if err != nil {
+			writeAPIError(writer, http.StatusBadGateway, "adb_packages_failed", "ADB package inventory failed")
+			return
+		}
+		writeJSON(writer, http.StatusOK, packagesResponse{
+			Device: packageDevice{
+				Serial: device.Serial,
+				State:  device.State,
+			},
+			Packages: packagePayload{
+				Scope: scope,
+				Items: items,
+				Count: len(items),
+			},
+		})
+		return
+	}
+	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+}
+
 func handleDeviceScreenshot(writer http.ResponseWriter, serialText string) {
 	serial, err := url.PathUnescape(serialText)
 	if err != nil || serial == "" || strings.Contains(serial, "/") {
@@ -1244,6 +1410,22 @@ func handleDeviceScreenshot(writer http.ResponseWriter, serialText string) {
 		return
 	}
 	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+}
+
+func parsePackageScope(values url.Values) (string, bool) {
+	scope := "all"
+	if scopeValues, ok := values["scope"]; ok {
+		if len(scopeValues) != 1 {
+			return "", false
+		}
+		scope = scopeValues[0]
+	}
+	switch scope {
+	case "all", "third-party", "system":
+		return scope, true
+	default:
+		return "", false
+	}
 }
 
 func parseLogcatQuery(values url.Values) (int, string, bool) {

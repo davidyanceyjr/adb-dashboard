@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.3.0
 - Current milestone: M4
-- Next eligible slice: M4-S1
+- Next eligible slice: M4-S2
 - Last reviewed: 2026-08-01
 
 This roadmap selects implementation order for the accepted local bootstrap,
@@ -810,7 +810,7 @@ Every implementation slice must:
 
 ### Slice M4-S1: Package Inventory API Success Path
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Return sorted package inventory for one current ready device without
   package or device mutation.

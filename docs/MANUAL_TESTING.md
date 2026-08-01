@@ -3,9 +3,10 @@
 ## Scope
 
 These steps exercise the current verified implementation level through
-`M3-S3`: local CLI behavior, configuration and startup checks, loopback server
+`M4-S1`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
-detail, bounded read-only logcat, and read-only PNG screenshot capture.
+detail, bounded read-only logcat, read-only PNG screenshot capture, and
+read-only package inventory API success responses.
 
 ## Requirements
 
@@ -442,6 +443,51 @@ Expected result:
 
 - HTTP status is `403`.
 - Error code is `forbidden_origin`.
+
+## Package Inventory API
+
+Request package inventory for the connected ready device:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages"
+```
+
+Expected result:
+
+- HTTP status is `200`.
+- JSON includes `device.serial` equal to `$SERIAL`.
+- JSON includes `device.state` equal to `device`.
+- JSON includes `packages.scope` equal to `all`.
+- JSON includes `packages.items` as an array sorted by package name.
+- JSON includes `packages.count` equal to the number of returned items.
+- Package items include `name` and may include `apkPath`, `userId`,
+  `versionCode`, or `installer` when reported by ADB.
+- JSON does not include bootstrap tokens, host environment variables, host file
+  paths, or command stderr.
+- No package output or artifact state is retained in `$DATA_DIR`, `$TEMP_DIR`,
+  or `.codex/tmp`.
+
+Repeat the package inventory request for the accepted scopes:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages?scope=all"
+
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages?scope=third-party"
+
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages?scope=system"
+```
+
+Expected result for each request:
+
+- HTTP status is `200`.
+- `packages.scope` matches the requested scope.
+- `packages.items` is sorted by package name.
+- The request is read-only package inspection; it must not install, uninstall,
+  clear, stop, launch, or pull packages.
 
 ## Browser UI
 

@@ -1,58 +1,36 @@
 # Active Cycle
 
-- Cycle ID: CYCLE-20260801-M4-S1
-- Mode: feature
-- Goal: Implement package inventory success responses for one current ready
-  device through the read-only HTTP API.
-- Roadmap slice: M4-S1: Package Inventory API Success Path.
-- Branch or work context: Git repository on branch `main`; working tree was
-  clean and aligned with `origin/main` before this plan update.
-- Specification anchors: `CAP-013`, `CAP-016`, `AC-016-001`,
-  `AC-016-002`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-003`.
-- Acceptance criteria: `AC-016-001`, `AC-016-002`.
-- Acceptance boundary: HTTP request through the running server with
-  deterministic fake ADB executables.
-- In scope: `GET /api/v1/devices/{serial}/packages` success responses;
-  `scope` values absent, `all`, `third-party`, and `system`; bounded execution
-  of the documented `pm list packages` variants; package row parsing, sorting,
-  count, and selected device fields.
-- Out of scope: Browser package UI, package detail, package mutation,
-  install/uninstall, file pull, package icons, retained package output,
-  artifact behavior, packaging, deployment, and unrelated cleanup.
-- Focused test command: To be discovered from repository test entry points and
-  recorded before build work begins. Expected target: a process/HTTP test for
-  M4-S1 package inventory success behavior.
-- Real-path command or procedure: Start the built server with fake ADB package
-  output, request package inventory for absent, `all`, `third-party`, and
-  `system` scopes, inspect JSON ordering/count/scope, inspect fake-command
-  logs, and inspect filesystem side effects.
-- Broad verification commands: Discover from repository entry points before
-  implementation; expected applicable checks are full Go tests, race tests,
-  `go vet`, and `git diff --check` using repo-local Go caches.
-- Current phase: planned
+- Status: inactive
+- Last cycle ID: CYCLE-20260801-M4-S1
+- Last mode: feature
+- Last roadmap slice: M4-S1: Package Inventory API Success Path
+- Last result: CYCLE READY
+- Last final phase: ready
+- Next eligible slice: M4-S2
 - Blocker: none
-- Next phase: contract
 
-## Phase Results
+## Last Evidence
 
-Phase: discovery
-Result: DISCOVERY READY
+- Focused test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S1'` exited `0`.
+- Real path: focused process/HTTP test started the built server with deterministic fake ADB, requested absent, `all`, `third-party`, and `system` scopes, observed HTTP `200` JSON with sorted package items/count/scope/device fields, verified exact fake ADB command logs, and verified no retained output paths.
+- Broad test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...` exited `0`.
+- Race test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...` exited `0`.
+- Static check: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...` exited `0`.
+- Diff whitespace check: `git diff --check` exited `0`.
+- Documentation sync: `docs/MANUAL_TESTING.md` updated for M4-S1 package inventory API success behavior.
+- Roadmap sync: `docs/roadmap.md` marks M4-S1 verified and M4-S2 next eligible.
+
+## Last Review
+
+Phase: review
+Result: REVIEW PASSED
 Evidence:
-- `git status --short --branch --untracked-files=all` exited `0` and showed
-  `## main...origin/main`.
-- `docs/roadmap.md` is accepted version `1.3.0`, current milestone `M4`, with
-  next eligible slice `M4-S1`.
-- `docs/SPECIFICATION.md` is accepted version `1.3.0` and defines `CAP-016` /
-  `AC-016-001` and `AC-016-002` with no blocking open questions.
-- `M4-S1` depends on `M3-S3`; `.codex/cycles/history.md` records
-  `CYCLE-20260801-M3-S3` as committed with focused and broad evidence.
-- Primary boundary for this slice is HTTP request through the running server
-  with deterministic fake ADB executables.
+- `AC-016-001` is covered by process/HTTP evidence asserting selected ready-device fields, sorted package items, count, scope, and absence of token/host/stderr leakage.
+- `AC-016-002` is covered by fake ADB command-log evidence for absent, `all`, `third-party`, and `system` scopes, with the fake executable rejecting unsupported package commands.
+- Diff is limited to package inventory production code, focused tests, manual testing documentation, roadmap status, and cycle evidence/history.
+- No placeholders, test-only production hooks, new dependencies, package mutation commands, retained package output paths, or unrelated cleanup were found in review.
 Changed:
 - `.codex/plans/current.md`
-Next: contract
+- `.codex/cycles/history.md`
+Next: none
 Blocker: none
-
-## Pause State
-
-- Current phase: planned for M4-S1.
