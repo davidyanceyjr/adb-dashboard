@@ -3,10 +3,10 @@
 ## Scope
 
 These steps exercise the current verified implementation level through
-`M4-S1`: local CLI behavior, configuration and startup checks, loopback server
+`M4-S2`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
-read-only package inventory API success responses.
+read-only package inventory API success and failure responses.
 
 ## Requirements
 
@@ -488,6 +488,51 @@ Expected result for each request:
 - `packages.items` is sorted by package name.
 - The request is read-only package inspection; it must not install, uninstall,
   clear, stop, launch, or pull packages.
+
+Request an invalid package inventory scope:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages?scope=disabled"
+```
+
+Expected result:
+
+- HTTP status is `400`.
+- Error code is `invalid_package_request`.
+- No package inventory command is executed for the invalid request.
+
+Repeat package inventory requests with an absent serial, a non-ready device,
+ADB unavailable, package command failure, timeout, malformed output, invalid
+UTF-8 output, and oversized output.
+
+Expected result:
+
+- Absent serial returns HTTP `404` with code `device_not_found`.
+- Non-ready device returns HTTP `409` with code `device_not_ready`.
+- ADB unavailable returns HTTP `503` with code `adb_unavailable`.
+- Package command failure, timeout, malformed output, invalid UTF-8 output, or
+  oversized output returns HTTP `502` with code `adb_packages_failed`.
+- Error JSON does not include `device`, `packages`, command stderr, host
+  environment variables, host filesystem paths, or token values.
+- No package output or artifact state is retained in `$DATA_DIR`, `$TEMP_DIR`,
+  or `.codex/tmp`.
+
+Request package inventory with a rejected Host or Origin:
+
+```sh
+curl -i -sS -H "Host: foreign.example" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages"
+
+curl -i -sS -H "Origin: http://foreign.example" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages"
+```
+
+Expected result:
+
+- HTTP status is `403`.
+- Error code is `forbidden_host` or `forbidden_origin`.
+- The rejection occurs before any ADB process is executed.
 
 ## Browser UI
 

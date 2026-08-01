@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.3.0
 - Current milestone: M4
-- Next eligible slice: M4-S2
+- Next eligible slice: M4-S3
 - Last reviewed: 2026-08-01
 
 This roadmap selects implementation order for the accepted local bootstrap,
@@ -865,7 +865,7 @@ Every implementation slice must:
 
 ### Slice M4-S2: Package Inventory API Failures And Security
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Fail closed for invalid package inventory requests, dependency
   failures, malformed output, and rejected security requests.

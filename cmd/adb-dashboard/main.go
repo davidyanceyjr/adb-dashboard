@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,8 @@ Options:
   --version
   --help
 `
+
+const maxPackageOutputBytes = 1 << 20
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -746,12 +749,29 @@ func discoverADBPackages(adbPath, serial, scope string) ([]packageItem, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, adbPath, args...)
-	output, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	output, readErr := io.ReadAll(io.LimitReader(stdout, maxPackageOutputBytes+1))
+	if len(output) > maxPackageOutputBytes {
+		cancel()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("output too large")
+	}
+	waitErr := cmd.Wait()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("timed out")
 	}
-	if err != nil {
-		return nil, err
+	if readErr != nil {
+		return nil, readErr
+	}
+	if waitErr != nil {
+		return nil, waitErr
 	}
 	if !utf8.Valid(output) {
 		return nil, fmt.Errorf("invalid utf-8")
