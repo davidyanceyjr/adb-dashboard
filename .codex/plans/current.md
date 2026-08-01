@@ -321,3 +321,99 @@ Changed:
 - `docs/MANUAL_TESTING.md`
 Next: none
 Blocker: none
+
+## Active Documentation Cycle
+
+- Cycle ID: CYCLE-20260801-M4-M5-ROADMAP
+- Mode: documentation
+- Goal: Extend the accepted specification and roadmap for the next two
+  milestones using narrow implementation-ready slices.
+- Roadmap slice: M4 and M5 roadmap authoring.
+- Branch or work context: Git repository on branch `main`; working tree was
+  clean and aligned with `origin/main` before this cycle.
+- Specification anchors: `CAP-016` through `CAP-021`, `AC-016-001` through
+  `AC-021-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-003`,
+  `INV-DATA-004`, `DATA-006`, `DATA-007`.
+- Acceptance criteria: Specification and roadmap documents are accepted, exact
+  capability and acceptance-criterion IDs exist for M4/M5, roadmap slices
+  reference existing IDs, each slice has one observable result and primary
+  boundary, and `M4-S1` is the next eligible slice.
+- Acceptance boundary: Durable documentation in `docs/SPECIFICATION.md` and
+  `docs/roadmap.md`.
+- In scope: M4 read-only package inspection contract and slices; M5 local APK
+  artifact intake, catalog, local analysis, browser states, and deletion
+  contract and slices; roadmap status/version/dependency updates.
+- Out of scope: Production code, tests, mutating ADB, install/uninstall, file
+  transfer, interactive shell, WebSocket streaming, external services,
+  packaging, release, deployment, and migration behavior.
+- Focused test command: `comm -23 <(rg -o 'AC-[0-9]{3}-[0-9]{3}' docs/roadmap.md | sort -u) <(rg -o 'AC-[0-9]{3}-[0-9]{3}' docs/SPECIFICATION.md | sort -u)`;
+  `comm -23 <(rg -o 'CAP-[0-9]{3}' docs/roadmap.md | sort -u) <(rg -o 'CAP-[0-9]{3}' docs/SPECIFICATION.md | sort -u)`.
+- Real-path command or procedure: Inspect `docs/SPECIFICATION.md` and
+  `docs/roadmap.md` for version/status, new capability sections, public API
+  routes, slice statuses, dependency order, and next eligible slice.
+- Broad verification commands: `git diff --check`.
+- Current phase: committed
+- Blocker: none
+- Next phase: none
+
+Phase: documentation
+Result: DOCS SYNCED
+Evidence:
+- `docs/SPECIFICATION.md` version `1.3.0` now accepts `CAP-016` through
+  `CAP-021` for M4 read-only package inspection and M5 local APK artifact
+  intake and analysis.
+- `docs/roadmap.md` version `1.3.0` now sets current milestone `M4`, next
+  eligible slice `M4-S1`, and adds `M4-S1` through `M4-S5` plus `M5-S1`
+  through `M5-S6`.
+- `comm -23 <(rg -o 'AC-[0-9]{3}-[0-9]{3}' docs/roadmap.md | sort -u) <(rg -o 'AC-[0-9]{3}-[0-9]{3}' docs/SPECIFICATION.md | sort -u)`
+  exited `0` with no output.
+- `comm -23 <(rg -o 'CAP-[0-9]{3}' docs/roadmap.md | sort -u) <(rg -o 'CAP-[0-9]{3}' docs/SPECIFICATION.md | sort -u)`
+  exited `0` with no output.
+- `git diff --check` exited `0`.
+Changed:
+- `docs/SPECIFICATION.md`
+- `docs/roadmap.md`
+Next: review
+Blocker: none
+
+Phase: review
+Result: REVIEW PASSED
+Evidence:
+- The cycle is documentation-only and did not modify production code or tests.
+- The accepted specification defines stable IDs, inputs, outputs, side effects,
+  errors, lifecycle, security/data-safety rules, compatibility, acceptance
+  criteria, and acceptance boundaries for `CAP-016` through `CAP-021`.
+- The roadmap defines eleven narrow accepted slices across two milestones:
+  five M4 package-inspection slices and six M5 artifact-intake/analysis slices.
+- Each new slice has one mode, exact specification references, one observable
+  result, one primary boundary, red evidence, focused verification discovery,
+  real-path exercise, broad verification, dependencies, scope exclusions, risks,
+  stop conditions, documentation sync, and binary exit gate.
+- `git diff --check` exited `0`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: ready
+Blocker: none
+
+Phase: ready
+Result: CYCLE READY
+Evidence:
+- `DOCS SYNCED` and `REVIEW PASSED` are recorded above with exact document
+  consistency and whitespace checks.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: committed
+Blocker: none
+
+Phase: committed
+Result: committed
+Evidence:
+- `git commit -m "docs: add m4 m5 roadmap"` created commit
+  `2424aedc0388d19c76c809356d1006992684cc89`.
+Changed:
+- `docs/SPECIFICATION.md`
+- `docs/roadmap.md`
+Next: none
+Blocker: none
