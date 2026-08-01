@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1306,6 +1307,342 @@ exit 17
 	})
 }
 
+func TestM3S1DeviceDetailAPI(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("returns_matching_fresh_inventory_device", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version detail-success\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  printf 'ZY22 offline transport_id:2\n'
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		response := requestJSON(t, httpRequestSpec{
+			method: "GET",
+			url:    "http://" + addr + "/api/v1/devices/" + url.PathEscape("emulator-5554"),
+			headers: map[string]string{
+				"Origin": "http://" + addr,
+			},
+		})
+
+		if response.statusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+		}
+		assertM3S1DeviceDetailJSON(t, response.body, map[string]any{
+			"status":     "available",
+			"executable": adbPath,
+			"version":    "Android Debug Bridge version detail-success",
+		}, map[string]any{
+			"serial":      "emulator-5554",
+			"state":       "device",
+			"product":     "sdk_phone",
+			"model":       "Pixel_8",
+			"device":      "emu64",
+			"transportId": "1",
+		})
+		assertFileContains(t, values["ADB_MARKER"], "version\ndevices -l\n")
+	})
+
+	t.Run("negative_paths_do_not_return_stale_device_or_secrets", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			envMutate  func(t *testing.T, env []string) []string
+			serial     string
+			wantStatus int
+			wantCode   string
+			wantMarker string
+		}{
+			{
+				name: "adb_unavailable",
+				envMutate: func(t *testing.T, env []string) []string {
+					return removeFakeADB(t, env)
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusServiceUnavailable,
+				wantCode:   "adb_unavailable",
+				wantMarker: "",
+			},
+			{
+				name: "inventory_failure",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version detail-failure\n'
+  exit 0
+fi
+echo "secret detail failure $HOME" >&2
+exit 42
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_devices_failed",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "malformed_inventory",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version detail-malformed\n'
+  exit 0
+fi
+printf 'List of devices attached\nserial-without-state\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_devices_failed",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "inventory_timeout",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version detail-timeout\n'
+  exit 0
+fi
+exec sleep 10
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_devices_failed",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "absent_serial",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version detail-absent\n'
+  exit 0
+fi
+printf 'List of devices attached\nZY22 offline transport_id:2\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusNotFound,
+				wantCode:   "device_not_found",
+				wantMarker: "version\ndevices -l\n",
+			},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				env := isolatedEnv(t)
+				values := envMap(env)
+				env = test.envMutate(t, env)
+				server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+				defer server.cleanup(t)
+
+				addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+				response := requestJSON(t, httpRequestSpec{
+					method: "GET",
+					url:    "http://" + addr + "/api/v1/devices/" + url.PathEscape(test.serial),
+				})
+
+				if response.statusCode != test.wantStatus {
+					t.Fatalf("status = %d, want %d; body = %s", response.statusCode, test.wantStatus, response.body)
+				}
+				assertAPIErrorEnvelope(t, response.body, test.wantCode)
+				assertResponseOmitsDeviceAndSecrets(t, response.body, values["HOME"])
+				if test.wantMarker == "" {
+					assertPathAbsent(t, values["ADB_MARKER"])
+				} else {
+					assertFileContains(t, values["ADB_MARKER"], test.wantMarker)
+				}
+			})
+		}
+	})
+
+	t.Run("security_rejection_before_adb", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		for _, test := range []struct {
+			name     string
+			request  httpRequestSpec
+			wantCode string
+		}{
+			{
+				name: "foreign_host",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554",
+					host:   "foreign.example",
+				},
+				wantCode: "forbidden_host",
+			},
+			{
+				name: "foreign_origin",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554",
+					headers: map[string]string{
+						"Origin": "http://foreign.example",
+					},
+				},
+				wantCode: "forbidden_origin",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestJSON(t, test.request)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertPathAbsent(t, values["ADB_MARKER"])
+			})
+		}
+	})
+}
+
+func TestM3S1BrowserRefreshAndDeviceDetailView(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("refreshes_and_opens_detail_without_sensitive_or_unsupported_output", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-detail\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  printf 'ZY22 offline transport_id:2\n'
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--read-only", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		html := string(body)
+		assertM3S1BrowserShellOmitsUnsupportedControls(t, html)
+
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, html), baseURL, []frontendAction{
+			{id: "devices-refresh", afterMS: 250},
+			{id: "device-detail-first", afterMS: 450},
+		})
+		for _, want := range []string{
+			"adb-status=adb: available",
+			"device-count=devices: 2",
+			"devices-list=emulator-5554 device\nZY22 offline",
+			"device-detail=serial: emulator-5554\nstate: device\nproduct: sdk_phone\nmodel: Pixel_8\ndevice: emu64\ntransport: 1",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{
+			"csrfToken",
+			"webSocketToken",
+			adbPath,
+			values["HOME"],
+			"Android Debug Bridge version browser-detail",
+			"unexpected adb arguments",
+			"shell",
+			"logcat",
+			"install",
+			"uninstall",
+			"reboot",
+			"screenshot",
+		} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered shell contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertFileContains(t, values["ADB_MARKER"], "version\nversion\ndevices -l\nversion\ndevices -l\nversion\ndevices -l\n")
+	})
+
+	t.Run("detail_failure_clears_stale_detail", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-detail-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  if [ -f "$HOME/fail-detail" ]; then
+    echo "secret detail failure $HOME" >&2
+    exit 42
+  fi
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-detail-first", afterMS: 250},
+			{touch: filepath.Join(values["HOME"], "fail-detail"), afterMS: 450},
+			{id: "device-detail-first", afterMS: 650},
+		})
+
+		for _, want := range []string{
+			"device-detail=detail: unavailable",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("rendered shell missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{
+			"serial: emulator-5554",
+			"product: sdk_phone",
+			"secret detail failure",
+			values["HOME"],
+		} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered failure shell contains stale or forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+	})
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -1671,7 +2008,18 @@ const failDevices = %t;
 const elements = {};
 function element(id) {
   if (!elements[id]) {
-    elements[id] = { textContent: "" };
+    elements[id] = {
+      textContent: "",
+      listeners: {},
+      addEventListener: (event, callback) => {
+        elements[id].listeners[event] = callback;
+      },
+      click: () => {
+        if (elements[id].listeners.click) {
+          return Promise.resolve(elements[id].listeners.click({ preventDefault: () => {} }));
+        }
+      },
+    };
   }
   return elements[id];
 }
@@ -1724,13 +2072,105 @@ setTimeout(() => {
 	return stdout.String()
 }
 
+type frontendAction struct {
+	id      string
+	touch   string
+	afterMS int
+}
+
+func runFrontendScriptWithActions(t *testing.T, script, baseURL string, actions []frontendAction) string {
+	t.Helper()
+
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required for deterministic browser-shell script execution: %v", err)
+	}
+
+	actionLines := make([]string, 0, len(actions))
+	for index, action := range actions {
+		delay := action.afterMS
+		if delay == 0 {
+			delay = 200 + index*200
+		}
+		switch {
+		case action.id != "":
+			actionLines = append(actionLines, fmt.Sprintf(`setTimeout(() => element(%q).click(), %d);`, action.id, delay))
+		case action.touch != "":
+			actionLines = append(actionLines, fmt.Sprintf(`setTimeout(() => { fs.mkdirSync(require("path").dirname(%q), { recursive: true }); fs.writeFileSync(%q, "fail\n"); }, %d);`, action.touch, action.touch, delay))
+		}
+	}
+
+	harness := fmt.Sprintf(`
+const fs = require("fs");
+const baseURL = %q;
+const elements = {};
+function element(id) {
+  if (!elements[id]) {
+    elements[id] = {
+      textContent: "",
+      listeners: {},
+      addEventListener: (event, callback) => {
+        elements[id].listeners[event] = callback;
+      },
+      click: () => {
+        if (elements[id].listeners.click) {
+          return Promise.resolve(elements[id].listeners.click({ preventDefault: () => {} }));
+        }
+      },
+    };
+  }
+  return elements[id];
+}
+global.window = {};
+global.document = {
+  getElementById: element,
+  addEventListener: (event, callback) => {
+    if (event === "DOMContentLoaded") {
+      Promise.resolve().then(callback);
+    }
+  },
+};
+const realFetch = global.fetch;
+global.fetch = async (target, options = {}) => {
+  const url = new URL(target, baseURL);
+  return realFetch(url.href, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      Origin: baseURL,
+    },
+  });
+};
+%s
+%s
+setTimeout(() => {
+  for (const key of Object.keys(elements).sort()) {
+    console.log(key + "=" + elements[key].textContent);
+  }
+}, 1000);
+`, baseURL, script, strings.Join(actionLines, "\n"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, nodePath, "-e", harness)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run frontend action script: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("frontend action script timed out\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	}
+	return stdout.String()
+}
+
 func assertBrowserShellOmitsUnsupportedADBControls(t *testing.T, text string) {
 	t.Helper()
 
 	for _, forbidden := range []string{
 		"csrfToken",
 		"webSocketToken",
-		"<button",
 		"<form",
 		"href=",
 		"raw command",
@@ -1745,6 +2185,30 @@ func assertBrowserShellOmitsUnsupportedADBControls(t *testing.T, text string) {
 	} {
 		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
 			t.Fatalf("browser shell contains forbidden text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func assertM3S1BrowserShellOmitsUnsupportedControls(t *testing.T, text string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"csrfToken",
+		"webSocketToken",
+		"<form",
+		"href=",
+		"raw command",
+		"logcat",
+		"transfers",
+		"artifacts",
+		"reboot",
+		"install",
+		"uninstall",
+		"screenshot",
+		"shell",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
 		}
 	}
 }
@@ -2320,8 +2784,28 @@ func apiErrorMessage(code string) string {
 		return "ADB is unavailable"
 	case "adb_devices_failed":
 		return "ADB device inventory failed"
+	case "device_not_found":
+		return "Device not found"
 	default:
 		return ""
+	}
+}
+
+func assertM3S1DeviceDetailJSON(t *testing.T, body []byte, wantADB map[string]any, wantDevice map[string]any) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal device detail JSON: %v\nbody: %s", err, body)
+	}
+	assertKeys(t, got, "adb", "device")
+	assertObject(t, got["adb"], wantADB)
+	assertObject(t, got["device"], wantDevice)
+	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD", "secret"}
+	for _, text := range forbidden {
+		if strings.Contains(string(body), text) {
+			t.Fatalf("device detail JSON contains forbidden text %q: %s", text, body)
+		}
 	}
 }
 
@@ -2348,6 +2832,23 @@ func assertM2S3DevicesJSON(t *testing.T, body []byte, wantADB map[string]any, wa
 	for _, text := range forbidden {
 		if strings.Contains(string(body), text) {
 			t.Fatalf("devices JSON contains forbidden text %q: %s", text, body)
+		}
+	}
+}
+
+func assertResponseOmitsDeviceAndSecrets(t *testing.T, body []byte, secrets ...string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal error JSON: %v\nbody: %s", err, body)
+	}
+	if _, ok := got["device"]; ok {
+		t.Fatalf("error response includes route-specific device field: %s", body)
+	}
+	for _, forbidden := range append(secrets, "secret", "ADB_DASHBOARD") {
+		if forbidden != "" && strings.Contains(string(body), forbidden) {
+			t.Fatalf("error response contains forbidden text %q: %s", forbidden, body)
 		}
 	}
 }

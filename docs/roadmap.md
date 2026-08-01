@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.2.0
 - Current milestone: M3
-- Next eligible slice: M3-S1
+- Next eligible slice: M3-S2
 - Last reviewed: 2026-08-01
 
 This roadmap selects implementation order for the accepted local bootstrap and
@@ -619,7 +619,7 @@ Every implementation slice must:
 
 ### Slice M3-S1: Explicit Device Refresh And Detail View
 
-- Status: planned
+- Status: verified
 - Mode: feature
 - Purpose: Let a browser user explicitly refresh current device inventory and
   open read-only details for one current device.

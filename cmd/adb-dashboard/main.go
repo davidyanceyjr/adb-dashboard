@@ -822,6 +822,11 @@ type devicesResponse struct {
 	Devices []deviceInventory `json:"devices"`
 }
 
+type deviceDetailResponse struct {
+	ADB    devicesADBStatus `json:"adb"`
+	Device deviceInventory  `json:"device"`
+}
+
 type devicesADBStatus struct {
 	Status     string `json:"status"`
 	Executable string `json:"executable"`
@@ -1022,6 +1027,42 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 			Devices: devices,
 		})
 	})
+	mux.HandleFunc("/api/v1/devices/", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
+			writeUnknownRoute(writer)
+			return
+		}
+		serialText := strings.TrimPrefix(request.URL.Path, "/api/v1/devices/")
+		serial, err := url.PathUnescape(serialText)
+		if err != nil || serial == "" || strings.Contains(serial, "/") {
+			writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+			return
+		}
+		adb := discoverADBVersion()
+		if adb.hasFailure() {
+			writeAPIError(writer, http.StatusServiceUnavailable, "adb_unavailable", "ADB is unavailable")
+			return
+		}
+		devices, err := discoverADBDevices(adb.path)
+		if err != nil {
+			writeAPIError(writer, http.StatusBadGateway, "adb_devices_failed", "ADB device inventory failed")
+			return
+		}
+		for _, device := range devices {
+			if device.Serial == serial {
+				writeJSON(writer, http.StatusOK, deviceDetailResponse{
+					ADB: devicesADBStatus{
+						Status:     "available",
+						Executable: adb.path,
+						Version:    adb.version,
+					},
+					Device: device,
+				})
+				return
+			}
+		}
+		writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+	})
 	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
 		writeUnknownRoute(writer)
 	})
@@ -1207,6 +1248,25 @@ const dashboardShellHTML = `<!doctype html>
     .device-list {
       white-space: pre-line;
     }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    button {
+      border: 1px solid #9aa8bf;
+      background: #ffffff;
+      color: #172033;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font: inherit;
+      cursor: pointer;
+    }
+    .device-detail {
+      margin-top: 8px;
+      white-space: pre-line;
+    }
   </style>
 </head>
 <body>
@@ -1217,7 +1277,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>bind</dt><dd id="server-bind">bind: unavailable</dd>
       <dt>read-only</dt><dd id="server-read-only">read-only: unavailable</dd>
       <dt>adb</dt><dd id="adb-status">adb: unavailable</dd>
-      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div></dd>
+      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div><div class="controls"><button type="button" id="devices-refresh">refresh</button><button type="button" id="device-detail-first">details</button></div><div id="device-detail" class="device-detail">detail: unavailable</div></dd>
       <dt>watcher</dt><dd id="watcher-status">watcher: unavailable</dd>
       <dt>jobs</dt><dd id="jobs-status">jobs: unavailable</dd>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
@@ -1234,6 +1294,9 @@ const dashboardShellHTML = `<!doctype html>
     }
   };
 
+  let latestDevices = [];
+  let refreshSequence = 0;
+
   const unavailable = () => {
     setText("server-status", "server: unavailable");
     setText("server-bind", "bind: unavailable");
@@ -1241,6 +1304,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("adb-status", "adb: unavailable");
     setText("device-count", "devices: unavailable");
     setText("devices-list", "");
+    setText("device-detail", "detail: unavailable");
     setText("watcher-status", "watcher: unavailable");
     setText("jobs-status", "jobs: unavailable");
     setText("sessions-status", "sessions: unavailable");
@@ -1249,11 +1313,14 @@ const dashboardShellHTML = `<!doctype html>
   };
 
   const devicesUnavailable = () => {
+    latestDevices = [];
     setText("device-count", "devices: unavailable");
     setText("devices-list", "");
+    setText("device-detail", "detail: unavailable");
   };
 
   const loadDevices = async () => {
+    const sequence = ++refreshSequence;
     try {
       const devicesResponse = await fetch("/api/v1/devices", { credentials: "same-origin" });
       if (!devicesResponse.ok) {
@@ -1261,12 +1328,55 @@ const dashboardShellHTML = `<!doctype html>
       }
       const inventory = await devicesResponse.json();
       const devices = Array.isArray(inventory.devices) ? inventory.devices : [];
+      if (sequence !== refreshSequence) {
+        return;
+      }
+      latestDevices = devices;
       setText("device-count", "devices: " + String(devices.length));
       setText("devices-list", devices.map((device) => {
         return String(device.serial || "") + " " + String(device.state || "");
       }).join("\n"));
+      setText("device-detail", "detail: unavailable");
     } catch (_) {
+      if (sequence !== refreshSequence) {
+        return;
+      }
       devicesUnavailable();
+    }
+  };
+
+  const loadFirstDeviceDetail = async () => {
+    const device = latestDevices[0];
+    if (!device || !device.serial) {
+      setText("device-detail", "detail: unavailable");
+      return;
+    }
+    try {
+      const detailResponse = await fetch("/api/v1/devices/" + encodeURIComponent(device.serial), { credentials: "same-origin" });
+      if (!detailResponse.ok) {
+        throw new Error("detail unavailable");
+      }
+      const detail = await detailResponse.json();
+      const current = detail.device || {};
+      const lines = [
+        "serial: " + String(current.serial || ""),
+        "state: " + String(current.state || ""),
+      ];
+      if (current.product) {
+        lines.push("product: " + String(current.product));
+      }
+      if (current.model) {
+        lines.push("model: " + String(current.model));
+      }
+      if (current.device) {
+        lines.push("device: " + String(current.device));
+      }
+      if (current.transportId) {
+        lines.push("transport: " + String(current.transportId));
+      }
+      setText("device-detail", lines.join("\n"));
+    } catch (_) {
+      setText("device-detail", "detail: unavailable");
     }
   };
 
@@ -1302,7 +1412,17 @@ const dashboardShellHTML = `<!doctype html>
     }
   };
 
-  document.addEventListener("DOMContentLoaded", loadStatus);
+  document.addEventListener("DOMContentLoaded", () => {
+    const refresh = document.getElementById("devices-refresh");
+    if (refresh) {
+      refresh.addEventListener("click", loadDevices);
+    }
+    const detail = document.getElementById("device-detail-first");
+    if (detail) {
+      detail.addEventListener("click", loadFirstDeviceDetail);
+    }
+    loadStatus();
+  });
 })();
   </script>
 </body>
