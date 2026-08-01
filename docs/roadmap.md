@@ -3,15 +3,16 @@
 ## Status
 
 - Roadmap status: Accepted
-- Roadmap version: 1.1.0
+- Roadmap version: 1.2.0
 - Specification source: `docs/SPECIFICATION.md`
-- Specification version: 1.1.0
-- Current milestone: M2
-- Next eligible slice: none
-- Last reviewed: 2026-07-29
+- Specification version: 1.2.0
+- Current milestone: M3
+- Next eligible slice: M3-S1
+- Last reviewed: 2026-08-01
 
 This roadmap selects implementation order for the accepted local bootstrap and
-read-only ADB discovery contract. It does not claim behavior is implemented.
+read-only ADB discovery and M3 read-only device inspection contract. It does
+not claim behavior is implemented.
 
 ## Slice Rules
 
@@ -614,28 +615,220 @@ Every implementation slice must:
 - Completion evidence reference: `.codex/plans/current.md` and
   `.codex/cycles/history.md`.
 
+## Milestone M3: Read-Only Device Inspection
+
+### Slice M3-S1: Explicit Device Refresh And Detail View
+
+- Status: planned
+- Mode: feature
+- Purpose: Let a browser user explicitly refresh current device inventory and
+  open read-only details for one current device.
+- Specification references: `CAP-011`, `CAP-012`, `CAP-013`,
+  `AC-013-001`, `AC-013-002`, `AC-013-003`, `AC-013-004`,
+  `AC-013-005`, `INV-FRONTEND-001`, `INV-SEC-001`, `INV-SEC-003`,
+  `INV-SEC-004`, `INV-DATA-003`
+- Observable result: A browser loaded from the running server can activate a
+  refresh control, observe updated backend-derived device inventory, open one
+  device detail, and see unavailable/error states without unsupported controls
+  or sensitive values.
+- Primary acceptance boundary: Browser interaction and HTTP request through the
+  running server with deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused browser/API test fails
+  because no explicit refresh control exists, `/api/v1/devices/{serial}` is
+  absent, stale detail can remain after failure, rejected Host or Origin
+  requests reach ADB, or unsupported controls/sensitive values are rendered.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused browser and HTTP test command for device refresh/detail behavior;
+  record the resolved command in `.codex/plans/current.md` before
+  implementation begins.
+- Real-path exercise: Start the server with fake ADB inventories, load the
+  browser shell, activate refresh, open detail for one serial, request the
+  device-detail route directly, then repeat with an absent serial and inventory
+  failure; inspect visible state, statuses, JSON bodies, and fake-command logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking, temporary
+  executable fixtures, and a modern JavaScript-capable browser or deterministic
+  browser automation.
+- Dependencies: `M2-S4`.
+- In scope:
+  - Explicit browser refresh control backed by current `/api/v1/devices`.
+  - `GET /api/v1/devices/{serial}` route.
+  - Detail rendering for serial, state, and present inventory properties.
+  - Available, unavailable, failed, malformed, timeout, absent-serial, and
+    rejected-security behavior.
+  - Absence of unsupported workflow controls and sensitive values.
+- Out of scope:
+  - Persistent device selection, mutation, polling, watchers, sessions,
+    WebSockets, logcat, screenshots, file transfer, package workflows,
+    artifact analysis, retained inventory, settings, packaging, and deployment.
+- Risks:
+  - Introducing a UI selection state that looks like persistent device control.
+  - Serving detail from stale browser state instead of backend inventory.
+  - Leaking command stderr, environment values, or executable paths.
+- Stop conditions:
+  - The detail route cannot be exercised through production routing.
+  - Browser automation or an equivalent deterministic visible-state boundary is
+    unavailable.
+  - Implementing detail would require mutation, persistence, or unsupported ADB
+    commands.
+- Documentation synchronization: Update user-facing browser/API documentation
+  if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-013-001` through `AC-013-005` have green browser/API evidence,
+  only `adb version` and `adb devices -l` are invoked, rejected security
+  requests invoke no ADB process, applicable broad checks pass or have recorded
+  blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M3-S2: Read-Only Device Logcat
+
+- Status: planned
+- Mode: feature
+- Purpose: Retrieve bounded read-only logcat text for one current ready device
+  without streaming, clearing logs, or retaining output.
+- Specification references: `CAP-013`, `CAP-014`, `AC-014-001`,
+  `AC-014-002`, `AC-014-003`, `AC-014-004`, `INV-SEC-001`,
+  `INV-SEC-003`, `INV-DATA-003`
+- Observable result: A browser or same-origin HTTP client can request bounded
+  logcat for a selected ready device and observe success, empty, invalid-input,
+  unavailable, failure, timeout, and security-rejection states.
+- Primary acceptance boundary: HTTP request and browser interaction through the
+  running server with deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused HTTP/browser test fails
+  because `/api/v1/devices/{serial}/logcat` is absent, invalid query values are
+  accepted, the command is not bounded to `adb -s SERIAL logcat -d`, output is
+  retained, rejected security requests invoke ADB, or browser controls imply
+  unsupported streaming/clear/shell behavior.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused logcat API and browser test command; record the resolved command in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake ADB inventories and logcat
+  output, request bounded logcat for one serial, inspect browser logcat state,
+  repeat invalid-input, absent-serial, non-ready-device, command-failure, and
+  timeout cases, and inspect fake-command logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Dependencies: `M3-S1`.
+- In scope:
+  - `GET /api/v1/devices/{serial}/logcat`.
+  - `lines` and `format` query validation.
+  - Bounded execution of `adb -s SERIAL logcat -d`.
+  - Last-N-line response and truncation flag.
+  - Browser logcat view with loading, empty, success, and failure states.
+  - Negative paths and rejected-security behavior.
+- Out of scope:
+  - Live streaming, WebSockets, log clearing, filters beyond accepted query
+    parameters, shell, sessions, jobs, retained logs, file writes, device
+    mutation, package workflows, screenshots, packaging, and deployment.
+- Risks:
+  - Returning unbounded or retained log output.
+  - Treating non-ready devices as ready for logcat.
+  - Leaking stderr or host environment details in responses.
+- Stop conditions:
+  - Logcat cannot be exercised through production routing with deterministic
+    fake ADB fixtures.
+  - Implementing the slice would require WebSockets, persistence, shell
+    interpolation, or unsupported ADB commands.
+- Documentation synchronization: Update user-facing browser/API documentation
+  if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-014-001` through `AC-014-004` have green HTTP/browser
+  evidence, only allowed ADB commands are invoked, no retained output is
+  written, rejected security requests invoke no ADB process, applicable broad
+  checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M3-S3: Read-Only Device Screenshot Capture
+
+- Status: planned
+- Mode: feature
+- Purpose: Capture one PNG screenshot from a current ready device without
+  retained files or device mutation.
+- Specification references: `CAP-013`, `CAP-015`, `AC-015-001`,
+  `AC-015-002`, `AC-015-003`, `AC-015-004`, `INV-SEC-001`,
+  `INV-SEC-003`, `INV-DATA-003`
+- Observable result: A browser or same-origin HTTP client can request a PNG
+  screenshot for a selected ready device and observe success, unavailable,
+  failure, invalid-output, timeout, and security-rejection states.
+- Primary acceptance boundary: HTTP request and browser interaction through the
+  running server with deterministic fake ADB executables.
+- Expected red or baseline-green evidence: The focused HTTP/browser test fails
+  because `/api/v1/devices/{serial}/screenshot` is absent, non-PNG output is
+  returned as success, output is written to files, rejected security requests
+  invoke ADB, or browser controls imply screen recording/file-transfer/device
+  mutation behavior.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused screenshot API and browser test command; record the resolved command
+  in `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with fake ADB inventories and PNG
+  screenshot output, request screenshot for one serial, inspect content type and
+  PNG bytes, inspect browser image state, repeat non-ready-device,
+  absent-serial, command-failure, timeout, empty-output, non-PNG, and
+  rejected-security cases, and inspect fake-command logs plus filesystem side
+  effects.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, and API checks discovered from repository
+  entry points.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Dependencies: `M3-S2`.
+- In scope:
+  - `GET /api/v1/devices/{serial}/screenshot`.
+  - Bounded execution of `adb -s SERIAL exec-out screencap -p`.
+  - PNG validation and image response.
+  - Browser screenshot view with loading, success, and failure states.
+  - Negative paths, no retained file output, and rejected-security behavior.
+- Out of scope:
+  - Screen recording, image annotation, retained screenshots, artifact storage,
+    file transfer, shell, sessions, jobs, package workflows, device mutation,
+    packaging, and deployment.
+- Risks:
+  - Returning command error text as an image.
+  - Persisting sensitive screenshots by accident.
+  - Treating non-ready devices as ready for screenshot capture.
+- Stop conditions:
+  - Screenshot cannot be exercised through production routing with
+    deterministic fake ADB fixtures.
+  - Implementing the slice would require persistence, shell interpolation,
+    mutation, or unsupported ADB commands.
+- Documentation synchronization: Update user-facing browser/API documentation
+  if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-015-001` through `AC-015-004` have green HTTP/browser
+  evidence, only allowed ADB commands are invoked, no retained image file is
+  written, rejected security requests invoke no ADB process, applicable broad
+  checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
 ## Dependency Order
 
 ```text
 M1-S1 -> M1-S2 -> M1-S3 -> M1-S4 -> M1-S5 -> M1-S6
 M1-S6 -> M2-S1 -> M2-S2 -> M2-S3 -> M2-S4
+M2-S4 -> M3-S1 -> M3-S2 -> M3-S3
 ```
 
 ## Future Milestones
 
-Future mutating ADB, interactive device, WebSocket, host-tool, artifact,
-persistence, logging redaction, request-correlation, body parsing, upload,
-retention, cleanup, performance, migration, packaging, release, and deployment
-behavior requires a later accepted specification before roadmap slices are
-added.
+Future mutating ADB, interactive device control, WebSocket streaming,
+host-tool, artifact, persistence, logging redaction, request-correlation, body
+parsing, upload, retention, cleanup, performance, migration, packaging,
+release, and deployment behavior requires a later accepted specification before
+roadmap slices are added.
 
 ## Roadmap Acceptance Record
 
 - Audit result: ROADMAP ACCEPTED
-- Reviewed slices: `M1-S1` through `M1-S6`; `M2-S1` through `M2-S4`
-- Blocking gaps: None for the accepted local bootstrap and read-only ADB
-  discovery contract.
+- Reviewed slices: `M1-S1` through `M1-S6`; `M2-S1` through `M2-S4`;
+  `M3-S1` through `M3-S3`
+- Blocking gaps: None for the accepted local bootstrap, read-only ADB
+  discovery, and M3 read-only device inspection contract.
 - Evidence or review reference: Authored against `docs/SPECIFICATION.md`
-  version `1.1.0`, `docs/ROADMAP_GUIDE.md`,
+  version `1.2.0`, `docs/ROADMAP_GUIDE.md`,
   `docs/ROADMAP.template.md`, `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and
-  repository source material available on 2026-07-29.
+  repository source material available on 2026-08-01.

@@ -3,9 +3,10 @@
 ## Status
 
 - Contract status: Accepted
-- Specification version: 1.1.0
+- Specification version: 1.2.0
 - Product or system: ADB Dashboard
-- Version or milestone: Local bootstrap plus read-only ADB discovery
+- Version or milestone: Local bootstrap, read-only ADB discovery, and M3
+  read-only device inspection
 - Owners or decision authority: ADB Dashboard Project
 - Last reviewed: July 2026
 - Supersedes:
@@ -19,11 +20,12 @@ and version-control history.
 ADB Dashboard is a local Linux developer tool that serves a browser interface
 for current dashboard status and read-only Android Debug Bridge inspection.
 
-The accepted current contract covers local bootstrap behavior plus read-only ADB
-discovery and device inventory. Interactive sessions, file transfer, artifact
-analysis, optional host-tool execution, jobs, retained output, and persistence
-beyond startup directories are outside this specification until a later accepted
-capability defines them.
+The accepted current contract covers local bootstrap behavior, read-only ADB
+discovery and device inventory, and M3 read-only device inspection through
+explicit refresh, device detail, bounded logcat reads, and screenshot capture.
+Interactive sessions, file transfer, artifact analysis, optional host-tool
+execution, jobs, retained output, and persistence beyond startup directories are
+outside this specification until a later accepted capability defines them.
 
 ## Scope
 
@@ -45,6 +47,12 @@ capability defines them.
 - Read-only `adb devices -l` execution and parsing.
 - `GET /api/v1/devices`.
 - Browser-visible ADB and device inventory state.
+- Explicit browser/API device inventory refresh.
+- Read-only `GET /api/v1/devices/{serial}` device detail derived from current
+  inventory.
+- Read-only bounded `adb logcat -d` execution for one selected serial.
+- Read-only `adb exec-out screencap -p` execution for one selected serial.
+- Browser-visible device detail, logcat, and screenshot states.
 - Standard `NIY` behavior for recognized unavailable actions and status fields.
 
 ### Out Of Scope
@@ -54,10 +62,13 @@ capability defines them.
   controls. `adb devices -l` may use the host ADB client's normal server
   behavior as documented by ADB.
 - Device selection and any device mutation.
-- Raw command execution, binary execution, PTY, WebSocket sessions, shell, and
-  logcat.
-- File push or pull, screenshots, package workflows, input, reboot, networking,
-  process, or system-state operations.
+- Raw command execution, binary execution, PTY, WebSocket sessions, and shell.
+- File push or pull, package workflows, input, reboot, networking, process, or
+  system-state operations.
+- Logcat streaming, clearing, filtering beyond bounded query parameters, or
+  retained log storage.
+- Screenshot mutation, screen recording, image annotation, or retained
+  screenshot storage.
 - Host-tool discovery or execution.
 - Artifact project storage, uploads, analysis, indexes, reports, caches,
   command history, retained output, and background jobs.
@@ -69,10 +80,10 @@ capability defines them.
 | Actor or caller | Public interface | Trust or ownership boundary | Relevant capabilities |
 |---|---|---|---|
 | Local operator | CLI process invocation | User account running the process | `CAP-001` through `CAP-006`, `CAP-010`, `INV-NIY-001` |
-| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009`, `CAP-012` |
-| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `CAP-011`, `INV-NIY-001` |
+| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009`, `CAP-012` through `CAP-015` |
+| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `CAP-011`, `CAP-013` through `CAP-015`, `INV-NIY-001` |
 | Host filesystem | Config, data directory, temp directory | Files owned or selected by process user | `CAP-004`, `CAP-005`, `CAP-006` |
-| Host ADB client | `adb` process invocation | Executable resolved from process `PATH` | `CAP-010`, `CAP-011` |
+| Host ADB client | `adb` process invocation | Executable resolved from process `PATH` | `CAP-010`, `CAP-011`, `CAP-013` through `CAP-015` |
 
 ## Terminology
 
@@ -1430,6 +1441,340 @@ stable for this specification version.
 
 - None.
 
+### CAP-013: Explicit Device Refresh And Device Detail
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can explicitly refresh
+read-only device inventory and inspect one currently connected device without
+mutating device state.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. ADB discovery from
+`CAP-010` succeeds. Device inventory from `CAP-011` is available. Device detail
+requests include a serial from current inventory using a path segment encoded
+for a URL. Browser refresh is initiated by a visible user action.
+
+**Successful behavior:** An explicit refresh requests fresh backend inventory
+and replaces the visible device list with the latest returned inventory. Device
+detail requests return one device object matching the requested serial from the
+fresh inventory source, plus ADB availability metadata.
+
+**Output, response, event, or visible state:**
+
+- `GET /api/v1/devices/{serial}` returns HTTP `200` with JSON:
+
+```json
+{
+  "adb": {
+    "status": "available",
+    "executable": "adb",
+    "version": "Android Debug Bridge version 1.0.41"
+  },
+  "device": {
+    "serial": "emulator-5554",
+    "state": "device",
+    "product": "sdk_gphone64_x86_64",
+    "model": "sdk_gphone64_x86_64",
+    "device": "emu64xa",
+    "transportId": "1"
+  }
+}
+```
+
+Optional device properties may be `null` or omitted only when absent from
+`adb devices -l` output. The browser shows selected serial, state, optional
+inventory properties that are present, refresh success, and refresh/detail
+failure states.
+
+**Required side effects:** The backend may execute only `adb version` and
+`adb devices -l` for refresh and device detail. Browser refresh updates only
+current visible state.
+
+**Forbidden side effects:** Refresh and detail must not select a persistent
+active device, mutate a device, start sessions, stream logs, capture
+screenshots, write project or artifact state, or create retained inventory.
+
+**Errors and negative behavior:**
+
+- If ADB discovery fails, device detail returns HTTP `503` with code
+  `adb_unavailable`.
+- If inventory execution fails, times out, or returns malformed output, device
+  detail returns HTTP `502` with code `adb_devices_failed`.
+- If the serial is absent from the fresh inventory, device detail returns HTTP
+  `404` with code `device_not_found`.
+- Rejected Host or Origin requests return the standard security error envelope
+  before ADB execution.
+- Browser refresh or detail failure visibly reports unavailable state and does
+  not show stale detail as current.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Each
+refresh or detail request performs fresh discovery and inventory work for that
+request. Backend ADB commands use bounded timeouts and argument vectors. If a
+browser refresh is requested while another refresh is pending, the latest
+completed response must not be overwritten by an older response.
+
+**Security, authorization, privacy, and data safety:** Device serials are local
+device identifiers and may appear in the browser and same-origin JSON because
+inventory already exposes them. Responses must not include bootstrap tokens,
+ADB executable paths beyond the documented executable display field, command
+stderr, environment values, host filesystem paths, or unsupported workflow
+controls.
+
+**Compatibility and versioning:** `GET /api/v1/devices` remains compatible.
+`GET /api/v1/devices/{serial}` and browser refresh/detail labels are stable for
+this specification version.
+
+#### Acceptance Criteria
+
+- `AC-013-001`: Given a running server with ADB available and two devices, when
+  the browser refresh control is activated, then the page requests fresh device
+  inventory, renders the latest count and serial/state rows, and exposes no
+  mutation controls.
+- `AC-013-002`: Given a serial present in fresh inventory, when
+  `GET /api/v1/devices/{serial}` is requested from an allowed same-origin
+  client, then the response is HTTP `200` with ADB metadata and the matching
+  device detail object.
+- `AC-013-003`: Given ADB unavailable, inventory failure, malformed inventory,
+  timeout, or an absent serial, when device detail is requested, then the
+  documented status and error code are returned with no stale successful device
+  object.
+- `AC-013-004`: Given a rejected Host or Origin request for device detail, when
+  the request is handled, then the standard security envelope is returned before
+  any ADB process is executed.
+- `AC-013-005`: Given the browser renders refresh and device detail states,
+  then it does not render token values, command stderr, environment values, host
+  filesystem paths, or controls for unsupported workflows.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: browser interaction and HTTP request through the running
+  server.
+- Focused evidence expected: automated browser-boundary and HTTP tests with
+  deterministic fake ADB fixtures asserting refresh, detail, failures, security
+  rejection, and absence of forbidden output.
+- Real-path exercise: start the server with fake ADB inventories, load the
+  browser shell, activate refresh, open one device detail, request the matching
+  API route, then repeat with an absent serial and inventory failure.
+- Required environment: Linux host with loopback networking, temporary
+  executable fixtures, and a modern JavaScript-capable browser or deterministic
+  browser automation.
+- Permitted deterministic substitutes: fake ADB executables and browser
+  automation.
+- Evidence that does not count: static markup checks, mock-only detail
+  handlers, or tests that do not prove ADB command restrictions.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-014: Read-Only Device Logcat
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can retrieve bounded
+read-only logcat text for one currently connected device.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. ADB discovery succeeds.
+The requested serial is present in fresh inventory and has state `device`.
+Requests use `GET /api/v1/devices/{serial}/logcat`. Optional query parameters:
+`lines` integer `1` through `500`, default `200`; `format` exactly `plain`,
+default `plain`.
+
+**Successful behavior:** The backend executes a bounded read-only logcat dump
+for the selected serial and returns the last requested number of lines without
+persisting output.
+
+**Output, response, event, or visible state:** HTTP `200` JSON:
+
+```json
+{
+  "device": {
+    "serial": "emulator-5554",
+    "state": "device"
+  },
+  "logcat": {
+    "format": "plain",
+    "lines": ["08-01 10:00:00.000 I Tag: message"],
+    "truncated": false
+  }
+}
+```
+
+The browser shows selected serial, log lines, empty-log state, loading state,
+and failure state.
+
+**Required side effects:** The backend may execute only `adb version`,
+`adb devices -l`, and `adb -s SERIAL logcat -d` with an argument vector.
+
+**Forbidden side effects:** Logcat must not execute shell commands, clear logs,
+stream indefinitely, open WebSockets, write retained output, create jobs,
+mutate device state, or include command stderr in successful output.
+
+**Errors and negative behavior:**
+
+- Invalid `lines` or `format` returns HTTP `400` with code
+  `invalid_logcat_request`.
+- ADB unavailable or serial absent follows `CAP-013` errors.
+- If the selected device is not in state `device`, return HTTP `409` with code
+  `device_not_ready`.
+- Logcat command failure, timeout, or invalid text returns HTTP `502` with code
+  `adb_logcat_failed`.
+- Rejected Host or Origin requests return the standard security envelope before
+  ADB execution.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Inventory
+validation occurs before logcat execution. Logcat execution has a bounded
+timeout. Output is retained only in memory for the response and browser state.
+
+**Security, authorization, privacy, and data safety:** Logcat output may contain
+application data from the selected device. It is served only through current
+same-origin local routes, is not logged by the dashboard, and is not persisted.
+Responses must not include bootstrap tokens, command stderr, environment
+values, or host filesystem paths.
+
+**Compatibility and versioning:** The route, query parameters, status codes,
+and JSON field names are stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-014-001`: Given a ready device and logcat output with more than the
+  requested number of lines, when the logcat route is requested, then HTTP
+  `200` returns only the last requested lines, `truncated: true`, and no command
+  stderr or host environment values.
+- `AC-014-002`: Given invalid `lines`, invalid `format`, ADB unavailable,
+  absent serial, non-ready device state, command failure, malformed output, or
+  timeout, when logcat is requested, then the documented status and error code
+  are returned and no retained output is written.
+- `AC-014-003`: Given a rejected Host or Origin request for logcat, when the
+  request is handled, then the standard security envelope is returned before
+  any ADB process is executed.
+- `AC-014-004`: Given the browser opens logcat for a ready device, then it
+  renders selected serial, bounded log lines, empty/failure states, and no
+  controls for clearing logs, shell, sessions, or streaming.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request and browser interaction through the running
+  server.
+- Focused evidence expected: process/HTTP and browser-boundary tests with fake
+  ADB fixtures for success, truncation, empty output, invalid input,
+  unavailable ADB, absent serial, non-ready device, command failure, timeout,
+  and security rejection.
+- Real-path exercise: start the server with fake ADB logcat output, request the
+  logcat API, inspect the browser logcat view, and inspect fake-command logs to
+  confirm only allowed commands ran.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Permitted deterministic substitutes: fake ADB executables and browser
+  automation.
+- Evidence that does not count: returning fixture logs without a production
+  ADB-command path or tests that do not assert command restrictions.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-015: Read-Only Device Screenshot Capture
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can capture and view a
+single PNG screenshot from one currently connected device without retaining or
+mutating state.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. ADB discovery succeeds.
+The requested serial is present in fresh inventory and has state `device`.
+Requests use `GET /api/v1/devices/{serial}/screenshot`.
+
+**Successful behavior:** The backend executes a bounded read-only screenshot
+capture for the selected serial, validates that stdout is PNG data, and returns
+the image bytes without persisting them.
+
+**Output, response, event, or visible state:** HTTP `200` with
+`Content-Type: image/png`, no JSON envelope, and a PNG byte stream. The browser
+shows selected serial, loading state, latest captured screenshot image, and
+failure state.
+
+**Required side effects:** The backend may execute only `adb version`,
+`adb devices -l`, and `adb -s SERIAL exec-out screencap -p` with an argument
+vector.
+
+**Forbidden side effects:** Screenshot capture must not write image files,
+create artifact state, start screen recording, use shell interpolation, mutate
+device state, or include command stderr in the image response.
+
+**Errors and negative behavior:**
+
+- ADB unavailable or serial absent follows `CAP-013` errors.
+- If the selected device is not in state `device`, return HTTP `409` with code
+  `device_not_ready`.
+- Screenshot command failure, timeout, empty output, or non-PNG output returns
+  HTTP `502` with code `adb_screenshot_failed`.
+- Rejected Host or Origin requests return the standard security envelope before
+  ADB execution.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Inventory
+validation occurs before screenshot execution. Screenshot execution has a
+bounded timeout. Image bytes are retained only in memory for the response and
+browser state.
+
+**Security, authorization, privacy, and data safety:** Screenshots may contain
+sensitive device display data. They are served only through current same-origin
+local routes, are not logged by the dashboard, and are not persisted. Error
+responses must not include command stderr, environment values, host filesystem
+paths, or token values.
+
+**Compatibility and versioning:** The route, status codes, PNG success response,
+and error envelopes are stable for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-015-001`: Given a ready device and valid PNG screenshot output, when the
+  screenshot route is requested, then HTTP `200` returns `Content-Type:
+  image/png` with PNG bytes and no JSON envelope.
+- `AC-015-002`: Given ADB unavailable, absent serial, non-ready device state,
+  command failure, timeout, empty output, or non-PNG output, when screenshot is
+  requested, then the documented status and error code are returned and no image
+  file or artifact state is written.
+- `AC-015-003`: Given a rejected Host or Origin request for screenshot, when
+  the request is handled, then the standard security envelope is returned before
+  any ADB process is executed.
+- `AC-015-004`: Given the browser captures a screenshot for a ready device,
+  then it renders selected serial, loading/failure states, the latest image, and
+  no controls for screen recording, file transfer, shell, sessions, or device
+  mutation.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request and browser interaction through the running
+  server.
+- Focused evidence expected: process/HTTP and browser-boundary tests with fake
+  ADB fixtures for valid PNG, command failure, timeout, empty output, non-PNG
+  output, non-ready device, absent serial, and security rejection.
+- Real-path exercise: start the server with fake ADB PNG output, request the
+  screenshot API, inspect response headers and bytes, inspect the browser image
+  view, and inspect fake-command logs to confirm only allowed commands ran.
+- Required environment: Linux host with loopback networking and temporary
+  executable fixtures.
+- Permitted deterministic substitutes: fake ADB executables and browser
+  automation.
+- Evidence that does not count: static image fixtures served without the
+  production ADB-command path or tests that do not assert no retained file was
+  written.
+
+#### Blocking Open Questions
+
+- None.
+
 ### INV-NIY-001: Standard NIY Behavior
 
 **Contract status:** Current invariant
@@ -1580,6 +1925,9 @@ The current API root is `/api/v1`. Current responses use JSON with content type
 - `GET /api/v1/bootstrap`
 - `GET /api/v1/status`
 - `GET /api/v1/devices`
+- `GET /api/v1/devices/{serial}`
+- `GET /api/v1/devices/{serial}/logcat`
+- `GET /api/v1/devices/{serial}/screenshot`
 - unknown `/api/v1` route error handling
 
 No current route requires a request body.
@@ -1607,8 +1955,8 @@ No current route requires a request body.
 - `INV-DATA-002`: Configuration failure must happen before startup directory
   creation.
 - `INV-DATA-003`: Current behavior may execute only the ADB commands named by
-  `CAP-010` and `CAP-011`. It must not execute optional host tools or other
-  external device-operation commands.
+  `CAP-010`, `CAP-011`, `CAP-014`, and `CAP-015`. It must not execute optional
+  host tools or other external device-operation commands.
 
 ## Compatibility And Migration
 
@@ -1616,7 +1964,7 @@ No current route requires a request body.
 - The HTTP server is local-only and uses plain HTTP on loopback.
 - Current command names, option names, configuration keys, environment variable
   names, exit-status meanings, doctor row names, API route paths, JSON field
-  names, and `NIY` function names are stable for specification version `1.1.0`.
+  names, and `NIY` function names are stable for specification version `1.2.0`.
 - Additional fields, routes, commands, UI controls, files, and configuration
   keys require a later accepted capability.
 - No persisted data schema or migration behavior exists in the current
@@ -1624,28 +1972,30 @@ No current route requires a request body.
 
 ## Known Limitations
 
-- The dashboard executes only `adb version` and `adb devices -l` under this
-  specification.
+- The dashboard executes only `adb version`, `adb devices -l`, bounded
+  `adb -s SERIAL logcat -d`, and bounded
+  `adb -s SERIAL exec-out screencap -p` under this specification.
 - The dashboard does not implement the ADB wire protocol.
-- Device mutation, interactive ADB workflows, and host-tool workflows are
-  unavailable until later specifications define exact behavior.
+- Device mutation, interactive ADB workflows, retained output, and host-tool
+  workflows are unavailable until later specifications define exact behavior.
 - Fastboot is outside the current contract.
 
 ## Open Questions
 
-- None for `CAP-001` through `CAP-012` and `INV-NIY-001`.
+- None for `CAP-001` through `CAP-015` and `INV-NIY-001`.
 
-Future mutating ADB, interactive device, WebSocket, host-tool, artifact,
-persistence, logging redaction, request-correlation, body parsing, upload,
-retention, cleanup, performance, and migration behavior requires separate
-specification before it can be implemented.
+Future mutating ADB, interactive device control, WebSocket streaming,
+host-tool, artifact, persistence, logging redaction, request-correlation, body
+parsing, upload, retention, cleanup, performance, packaging, release,
+deployment, and migration behavior requires separate specification before it
+can be implemented.
 
 ## Specification Acceptance Record
 
 - Audit result: SPECIFICATION ACCEPTED
-- Reviewed capabilities: `CAP-001` through `CAP-012`; `INV-NIY-001`
-- Blocking gaps: None for the local bootstrap and read-only ADB discovery
-  contract
+- Reviewed capabilities: `CAP-001` through `CAP-015`; `INV-NIY-001`
+- Blocking gaps: None for the local bootstrap, read-only ADB discovery, and M3
+  read-only device inspection contract
 - Evidence or review reference: Authored against
   `docs/SPECIFICATION_GUIDE.md`, `docs/SPECIFICATION.template.md`,
   `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and the source material available
