@@ -3,11 +3,11 @@
 ## Scope
 
 These steps exercise the current verified implementation level through
-`M4-S3`: local CLI behavior, configuration and startup checks, loopback server
+`M4-S4`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
-read-only package inventory API and browser success, failure, and scope
-selection behavior.
+read-only package inventory API/browser behavior plus package detail API
+behavior.
 
 ## Requirements
 
@@ -535,6 +535,65 @@ Expected result:
 - Error code is `forbidden_host` or `forbidden_origin`.
 - The rejection occurs before any ADB process is executed.
 
+## Package Detail API
+
+Request package detail for one package on the connected ready device:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages/com.example.alpha"
+```
+
+Expected result:
+
+- HTTP status is `200`.
+- JSON includes `device.serial` equal to `$SERIAL`.
+- JSON includes `device.state` equal to `device`.
+- JSON includes `package.name` equal to the requested package name.
+- `package` may include `versionName`, `versionCode`, `installer`,
+  `firstInstallTime`, `lastUpdateTime`, and `requestedPermissions` when
+  reported by ADB.
+- `package.summaryLines` is present and bounded.
+- JSON does not include bootstrap tokens, host environment variables, host file
+  paths, or command stderr.
+- No package output or artifact state is retained in `$DATA_DIR`, `$TEMP_DIR`,
+  or `.codex/tmp`.
+
+Repeat package detail requests with an invalid package name, absent serial,
+non-ready device, ADB unavailable, package-not-found output, command failure,
+timeout, malformed output, invalid UTF-8 output, and oversized output.
+
+Expected result:
+
+- Invalid package name returns HTTP `400` with code
+  `invalid_package_request`.
+- Absent serial returns HTTP `404` with code `device_not_found`.
+- Non-ready device returns HTTP `409` with code `device_not_ready`.
+- ADB unavailable returns HTTP `503` with code `adb_unavailable`.
+- Package-not-found output returns HTTP `404` with code `package_not_found`.
+- Package command failure, timeout, malformed output, invalid UTF-8 output, or
+  oversized output returns HTTP `502` with code `adb_package_detail_failed`.
+- Error JSON does not include `device`, `package`, `packages`, command stderr,
+  host environment variables, host filesystem paths, or token values.
+- No package output or artifact state is retained in `$DATA_DIR`, `$TEMP_DIR`,
+  or `.codex/tmp`.
+
+Request package detail with a rejected Host or Origin:
+
+```sh
+curl -i -sS -H "Host: foreign.example" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages/com.example.alpha"
+
+curl -i -sS -H "Origin: http://foreign.example" \
+  "http://$ADDR/api/v1/devices/$SERIAL/packages/com.example.alpha"
+```
+
+Expected result:
+
+- HTTP status is `403`.
+- Error code is `forbidden_host` or `forbidden_origin`.
+- The rejection occurs before any ADB process is executed.
+
 ## Browser UI
 
 Open the dashboard in a browser:
@@ -651,13 +710,19 @@ return:
 - Error code `device_not_ready`.
 - No route-specific `device` or `packages` field.
 
+With that non-ready serial substituted for `$SERIAL`, package detail should
+return:
+
+- HTTP status `409`.
+- Error code `device_not_ready`.
+- No route-specific `device`, `package`, or `packages` field.
+
 ## Current Unavailable Areas
 
-Do not manually test package detail or local APK artifact workflows as current
-behavior. The accepted roadmap lists those as future slices beginning at
-`M4-S4`; the current production server does not expose
-`/api/v1/devices/{serial}/packages/{packageName}` or `/api/v1/artifacts`
-routes.
+Do not manually test browser package detail or local APK artifact workflows as
+current behavior. The accepted roadmap lists those as future slices beginning
+at `M4-S5`; the current browser does not expose package detail controls, and
+the production server does not expose `/api/v1/artifacts` routes.
 
 ## Shutdown
 

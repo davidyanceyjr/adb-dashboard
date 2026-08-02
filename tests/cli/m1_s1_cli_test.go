@@ -2776,6 +2776,353 @@ done
 	})
 }
 
+func TestM4S4PackageDetailAPISuccess(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version package-detail-success\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "dumpsys" ] && [ "$5" = "package" ] && [ "$6" = "com.example.alpha" ] && [ "$#" -eq 6 ]; then
+  echo "secret detail stderr $HOME" >&2
+  printf 'Package [com.example.alpha] (abc123):\n'
+  printf '  versionName=1.2.3\n'
+  printf '  versionCode=42 minSdk=23 targetSdk=35\n'
+  printf '  installerPackageName=com.android.vending\n'
+  printf '  firstInstallTime=2026-08-01 10:11:12\n'
+  printf '  lastUpdateTime=2026-08-02 09:08:07\n'
+  printf '  requested permissions:\n'
+  printf '    android.permission.INTERNET\n'
+  printf '    com.example.alpha.permission.SYNC\n'
+  printf '  install permissions:\n'
+  printf '    android.permission.INTERNET: granted=true\n'
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+	defer server.cleanup(t)
+
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+	response := requestJSON(t, httpRequestSpec{
+		method: "GET",
+		url:    baseURL + "/api/v1/devices/" + url.PathEscape("emulator-5554") + "/packages/" + url.PathEscape("com.example.alpha"),
+		headers: map[string]string{
+			"Origin": baseURL,
+		},
+	})
+	if response.statusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", response.statusCode, response.body)
+	}
+	assertM4S4PackageDetailJSON(t, response.body, map[string]any{
+		"serial": "emulator-5554",
+		"state":  "device",
+	}, map[string]any{
+		"name":                 "com.example.alpha",
+		"versionName":          "1.2.3",
+		"versionCode":          "42",
+		"installer":            "com.android.vending",
+		"firstInstallTime":     "2026-08-01 10:11:12",
+		"lastUpdateTime":       "2026-08-02 09:08:07",
+		"requestedPermissions": stringSliceAsAny([]string{"android.permission.INTERNET", "com.example.alpha.permission.SYNC"}),
+	}, []string{
+		"Package [com.example.alpha] (abc123):",
+		"versionName=1.2.3",
+		"versionCode=42 minSdk=23 targetSdk=35",
+		"installerPackageName=com.android.vending",
+	})
+	if strings.Contains(string(response.body), adbPath) || strings.Contains(string(response.body), values["HOME"]) || strings.Contains(string(response.body), "secret detail stderr") {
+		t.Fatalf("package detail response contains executable, host path, or stderr: %s", response.body)
+	}
+	assertNoRetainedOutputPaths(t, env)
+	assertFileContains(t, values["ADB_MARKER"], strings.Join([]string{
+		"version",
+		"devices -l",
+		"-s emulator-5554 shell dumpsys package com.example.alpha",
+		"",
+	}, "\n"))
+}
+
+func TestM4S4PackageDetailAPIFailuresAndSecurity(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("negative_paths_do_not_return_or_retain_package_detail", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			packageName string
+			envMutate   func(t *testing.T, env []string) []string
+			serial      string
+			wantStatus  int
+			wantCode    string
+			wantMarker  string
+		}{
+			{name: "empty_package", packageName: "", serial: "emulator-5554", wantStatus: http.StatusBadRequest, wantCode: "invalid_package_request"},
+			{name: "path_like_package", packageName: "com.example/alpha", serial: "emulator-5554", wantStatus: http.StatusBadRequest, wantCode: "invalid_package_request"},
+			{name: "shell_metacharacter_package", packageName: "com.example.alpha;clear", serial: "emulator-5554", wantStatus: http.StatusBadRequest, wantCode: "invalid_package_request"},
+			{name: "too_long_package", packageName: "com." + strings.Repeat("a", 256), serial: "emulator-5554", wantStatus: http.StatusBadRequest, wantCode: "invalid_package_request"},
+			{
+				name: "adb_unavailable", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					return removeFakeADB(t, env)
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusServiceUnavailable,
+				wantCode:   "adb_unavailable",
+			},
+			{
+				name: "absent_serial", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version package-detail-absent\n'
+  exit 0
+fi
+printf 'List of devices attached\nZY22 device transport_id:2\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusNotFound,
+				wantCode:   "device_not_found",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "non_ready_device", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version package-detail-offline\n'
+  exit 0
+fi
+printf 'List of devices attached\nemulator-5554 offline transport_id:1\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusConflict,
+				wantCode:   "device_not_ready",
+				wantMarker: "version\ndevices -l\n",
+			},
+			{
+				name: "package_not_found", packageName: "com.example.missing",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version package-detail-not-found\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+printf 'Unable to find package: com.example.missing\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusNotFound,
+				wantCode:   "package_not_found",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 shell dumpsys package com.example.missing\n",
+			},
+			{
+				name: "package_command_failure", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version package-detail-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+echo "secret detail failure $HOME" >&2
+exit 42
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_package_detail_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 shell dumpsys package com.example.alpha\n",
+			},
+			{
+				name: "timeout", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version package-detail-timeout\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+exec sleep 10
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_package_detail_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 shell dumpsys package com.example.alpha\n",
+			},
+			{
+				name: "malformed_output", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version package-detail-malformed\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+printf 'Package [com.other.app] (abc):\n'
+printf '  versionName=9\n'
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_package_detail_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 shell dumpsys package com.example.alpha\n",
+			},
+			{
+				name: "invalid_utf8", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$ADB_MARKER\"\nif [ \"$1\" = \"version\" ]; then printf 'Android Debug Bridge version package-detail-utf8\\n'; exit 0; fi\nif [ \"$1\" = \"devices\" ]; then printf 'List of devices attached\\nemulator-5554 device transport_id:1\\n'; exit 0; fi\nprintf '\\377\\376\\n'\n")
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_package_detail_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 shell dumpsys package com.example.alpha\n",
+			},
+			{
+				name: "oversized_output", packageName: "com.example.alpha",
+				envMutate: func(t *testing.T, env []string) []string {
+					writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version package-detail-oversized\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\nemulator-5554 device transport_id:1\n'
+  exit 0
+fi
+i=0
+while [ "$i" -lt 40000 ]; do
+  printf '  summary line %05d for com.example.alpha\n' "$i"
+  i=$((i + 1))
+done
+`)
+					return env
+				},
+				serial:     "emulator-5554",
+				wantStatus: http.StatusBadGateway,
+				wantCode:   "adb_package_detail_failed",
+				wantMarker: "version\ndevices -l\n-s emulator-5554 shell dumpsys package com.example.alpha\n",
+			},
+		}
+
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				env := isolatedEnv(t)
+				values := envMap(env)
+				if test.envMutate != nil {
+					env = test.envMutate(t, env)
+				}
+				server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+				defer server.cleanup(t)
+
+				addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+				detailURL := "http://" + addr + "/api/v1/devices/" + url.PathEscape(test.serial) + "/packages"
+				detailURL += "/" + url.PathEscape(test.packageName)
+				response := requestJSON(t, httpRequestSpec{
+					method: "GET",
+					url:    detailURL,
+				})
+
+				if response.statusCode != test.wantStatus {
+					t.Fatalf("status = %d, want %d; body prefix = %.512s", response.statusCode, test.wantStatus, response.body)
+				}
+				assertAPIErrorEnvelope(t, response.body, test.wantCode)
+				assertResponseOmitsPackageDetailAndSecrets(t, response.body, values["HOME"])
+				assertNoRetainedOutputPaths(t, env)
+				if test.wantMarker == "" {
+					assertPathAbsent(t, values["ADB_MARKER"])
+				} else {
+					assertFileContains(t, values["ADB_MARKER"], test.wantMarker)
+				}
+			})
+		}
+	})
+
+	t.Run("security_rejection_before_adb", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		for _, test := range []struct {
+			name     string
+			request  httpRequestSpec
+			wantCode string
+		}{
+			{
+				name: "foreign_host",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554/packages/com.example.alpha",
+					host:   "foreign.example",
+				},
+				wantCode: "forbidden_host",
+			},
+			{
+				name: "foreign_origin",
+				request: httpRequestSpec{
+					method: "GET",
+					url:    baseURL + "/api/v1/devices/emulator-5554/packages/com.example.alpha",
+					headers: map[string]string{
+						"Origin": "http://foreign.example",
+					},
+				},
+				wantCode: "forbidden_origin",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestJSON(t, test.request)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertPathAbsent(t, values["ADB_MARKER"])
+			})
+		}
+	})
+}
+
 func TestM4S3BrowserPackageInventoryView(t *testing.T) {
 	binary := buildDashboard(t)
 
@@ -4192,6 +4539,10 @@ func apiErrorMessage(code string) string {
 		return "Invalid package request"
 	case "adb_packages_failed":
 		return "ADB package inventory failed"
+	case "package_not_found":
+		return "Package not found"
+	case "adb_package_detail_failed":
+		return "ADB package detail failed"
 	default:
 		return ""
 	}
@@ -4253,6 +4604,45 @@ func assertM4S1PackagesJSON(t *testing.T, body []byte, wantDevice map[string]any
 	for _, text := range forbidden {
 		if strings.Contains(string(body), text) {
 			t.Fatalf("packages JSON contains forbidden text %q: %s", text, body)
+		}
+	}
+}
+
+func assertM4S4PackageDetailJSON(t *testing.T, body []byte, wantDevice map[string]any, wantPackage map[string]any, wantSummaryPrefix []string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal package detail JSON: %v\nbody: %s", err, body)
+	}
+	assertKeys(t, got, "device", "package")
+	assertObject(t, got["device"], wantDevice)
+	pkg, ok := got["package"].(map[string]any)
+	if !ok {
+		t.Fatalf("package = %#v, want object", got["package"])
+	}
+	for key, want := range wantPackage {
+		assertObject(t, map[string]any{key: pkg[key]}, map[string]any{key: want})
+	}
+	lines, ok := pkg["summaryLines"].([]any)
+	if !ok {
+		t.Fatalf("package.summaryLines = %#v, want array", pkg["summaryLines"])
+	}
+	if len(lines) < len(wantSummaryPrefix) {
+		t.Fatalf("package.summaryLines length = %d, want at least %d: %#v", len(lines), len(wantSummaryPrefix), lines)
+	}
+	if len(lines) > 50 {
+		t.Fatalf("package.summaryLines length = %d, want bounded to 50 or fewer", len(lines))
+	}
+	for index, want := range wantSummaryPrefix {
+		if lines[index] != want {
+			t.Fatalf("package.summaryLines[%d] = %#v, want %q; lines = %#v", index, lines[index], want, lines)
+		}
+	}
+	forbidden := []string{"token", "HOME=", "ADB_DASHBOARD", "secret"}
+	for _, text := range forbidden {
+		if strings.Contains(string(body), text) {
+			t.Fatalf("package detail JSON contains forbidden text %q: %s", text, body)
 		}
 	}
 }
@@ -4369,6 +4759,25 @@ func assertResponseOmitsPackagesAndSecrets(t *testing.T, body []byte, secrets ..
 		t.Fatalf("unmarshal error JSON: %v\nbody: %s", err, body)
 	}
 	for _, key := range []string{"device", "packages"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("error response includes route-specific %s field: %s", key, body)
+		}
+	}
+	for _, forbidden := range append(secrets, "secret", "ADB_DASHBOARD", "com.example") {
+		if forbidden != "" && strings.Contains(string(body), forbidden) {
+			t.Fatalf("error response contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+}
+
+func assertResponseOmitsPackageDetailAndSecrets(t *testing.T, body []byte, secrets ...string) {
+	t.Helper()
+
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal error JSON: %v\nbody: %s", err, body)
+	}
+	for _, key := range []string{"device", "package", "packages"} {
 		if _, ok := got[key]; ok {
 			t.Fatalf("error response includes route-specific %s field: %s", key, body)
 		}

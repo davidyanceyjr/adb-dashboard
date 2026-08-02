@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.3.0
 - Current milestone: M4
-- Next eligible slice: M4-S4
+- Next eligible slice: M4-S5
 - Last reviewed: 2026-08-02
 
 This roadmap selects implementation order for the accepted local bootstrap,
@@ -975,7 +975,7 @@ Every implementation slice must:
 
 ### Slice M4-S4: Package Detail API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Return bounded read-only detail for one valid package on one current
   ready device.

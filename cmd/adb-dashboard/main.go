@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -57,6 +58,9 @@ Options:
 `
 
 const maxPackageOutputBytes = 1 << 20
+const maxPackageSummaryLines = 50
+
+var errPackageNotFound = errors.New("package not found")
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -779,6 +783,41 @@ func discoverADBPackages(adbPath, serial, scope string) ([]packageItem, error) {
 	return parseADBPackagesOutput(string(output))
 }
 
+func discoverADBPackageDetail(adbPath, serial, packageName string) (packageDetailPayload, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "shell", "dumpsys", "package", packageName)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return packageDetailPayload{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return packageDetailPayload{}, err
+	}
+	output, readErr := io.ReadAll(io.LimitReader(stdout, maxPackageOutputBytes+1))
+	if len(output) > maxPackageOutputBytes {
+		cancel()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return packageDetailPayload{}, fmt.Errorf("output too large")
+	}
+	waitErr := cmd.Wait()
+	if ctx.Err() == context.DeadlineExceeded {
+		return packageDetailPayload{}, fmt.Errorf("timed out")
+	}
+	if readErr != nil {
+		return packageDetailPayload{}, readErr
+	}
+	if waitErr != nil {
+		return packageDetailPayload{}, waitErr
+	}
+	if !utf8.Valid(output) {
+		return packageDetailPayload{}, fmt.Errorf("invalid utf-8")
+	}
+	return parseADBPackageDetailOutput(packageName, string(output))
+}
+
 func isPNG(output []byte) bool {
 	prefix := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 	if len(output) < len(prefix) {
@@ -849,6 +888,84 @@ func parseADBPackageLine(line string) (packageItem, error) {
 		}
 	}
 	return item, nil
+}
+
+func parseADBPackageDetailOutput(packageName, output string) (packageDetailPayload, error) {
+	lines := boundedSummaryLines(output, maxPackageSummaryLines)
+	if len(lines) == 0 || strings.Contains(output, "Unable to find package: "+packageName) {
+		return packageDetailPayload{}, errPackageNotFound
+	}
+	header := "Package [" + packageName + "]"
+	foundPackage := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "Package [") {
+			if strings.HasPrefix(line, header) {
+				foundPackage = true
+				break
+			}
+			return packageDetailPayload{}, fmt.Errorf("malformed package detail")
+		}
+	}
+	if !foundPackage {
+		return packageDetailPayload{}, fmt.Errorf("malformed package detail")
+	}
+
+	detail := packageDetailPayload{
+		Name:         packageName,
+		SummaryLines: lines,
+	}
+	collectPermissions := false
+	for _, rawLine := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "versionName="):
+			detail.VersionName = stringPointer(strings.TrimPrefix(line, "versionName="))
+			collectPermissions = false
+		case strings.HasPrefix(line, "versionCode="):
+			value := strings.TrimPrefix(line, "versionCode=")
+			value, _, _ = strings.Cut(value, " ")
+			if value != "" {
+				detail.VersionCode = stringPointer(value)
+			}
+			collectPermissions = false
+		case strings.HasPrefix(line, "installerPackageName="):
+			detail.Installer = stringPointer(strings.TrimPrefix(line, "installerPackageName="))
+			collectPermissions = false
+		case strings.HasPrefix(line, "firstInstallTime="):
+			detail.FirstInstallTime = stringPointer(strings.TrimPrefix(line, "firstInstallTime="))
+			collectPermissions = false
+		case strings.HasPrefix(line, "lastUpdateTime="):
+			detail.LastUpdateTime = stringPointer(strings.TrimPrefix(line, "lastUpdateTime="))
+			collectPermissions = false
+		case line == "requested permissions:":
+			collectPermissions = true
+		case collectPermissions:
+			if strings.HasSuffix(line, ":") || strings.Contains(line, ":") {
+				collectPermissions = false
+				continue
+			}
+			detail.RequestedPermissions = append(detail.RequestedPermissions, line)
+		}
+	}
+	return detail, nil
+}
+
+func boundedSummaryLines(output string, limit int) []string {
+	lines := []string{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) == limit {
+			break
+		}
+	}
+	return lines
 }
 
 func lastLogcatLines(output string, limit int) ([]string, bool) {
@@ -1018,6 +1135,11 @@ type packagesResponse struct {
 	Packages packagePayload `json:"packages"`
 }
 
+type packageDetailResponse struct {
+	Device  packageDevice        `json:"device"`
+	Package packageDetailPayload `json:"package"`
+}
+
 type packageDevice struct {
 	Serial string `json:"serial"`
 	State  string `json:"state"`
@@ -1035,6 +1157,17 @@ type packageItem struct {
 	Installer   *string `json:"installer,omitempty"`
 	UserID      *string `json:"userId,omitempty"`
 	VersionCode *string `json:"versionCode,omitempty"`
+}
+
+type packageDetailPayload struct {
+	Name                 string   `json:"name"`
+	VersionName          *string  `json:"versionName,omitempty"`
+	VersionCode          *string  `json:"versionCode,omitempty"`
+	Installer            *string  `json:"installer,omitempty"`
+	FirstInstallTime     *string  `json:"firstInstallTime,omitempty"`
+	LastUpdateTime       *string  `json:"lastUpdateTime,omitempty"`
+	RequestedPermissions []string `json:"requestedPermissions,omitempty"`
+	SummaryLines         []string `json:"summaryLines"`
 }
 
 type devicesADBStatus struct {
@@ -1248,6 +1381,11 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 			handleDeviceLogcat(writer, request, serialText)
 			return
 		}
+		if strings.Contains(serialText, "/packages/") {
+			parts := strings.SplitN(serialText, "/packages/", 2)
+			handleDevicePackageDetail(writer, request, parts[0], parts[1])
+			return
+		}
 		if strings.HasSuffix(serialText, "/packages") {
 			serialText = strings.TrimSuffix(serialText, "/packages")
 			handleDevicePackages(writer, request, serialText)
@@ -1393,6 +1531,83 @@ func handleDevicePackages(writer http.ResponseWriter, request *http.Request, ser
 		return
 	}
 	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+}
+
+func handleDevicePackageDetail(writer http.ResponseWriter, request *http.Request, serialText, packageText string) {
+	serial, err := url.PathUnescape(serialText)
+	if err != nil || serial == "" || strings.Contains(serial, "/") {
+		writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+		return
+	}
+	packageName, err := url.PathUnescape(packageText)
+	if err != nil || !validPackageName(packageName) {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_package_request", "Invalid package request")
+		return
+	}
+	adb := discoverADBVersion()
+	if adb.hasFailure() {
+		writeAPIError(writer, http.StatusServiceUnavailable, "adb_unavailable", "ADB is unavailable")
+		return
+	}
+	devices, err := discoverADBDevices(adb.path)
+	if err != nil {
+		writeAPIError(writer, http.StatusBadGateway, "adb_devices_failed", "ADB device inventory failed")
+		return
+	}
+	for _, device := range devices {
+		if device.Serial != serial {
+			continue
+		}
+		if device.State != "device" {
+			writeAPIError(writer, http.StatusConflict, "device_not_ready", "Device is not ready")
+			return
+		}
+		detail, err := discoverADBPackageDetail(adb.path, serial, packageName)
+		if errors.Is(err, errPackageNotFound) {
+			writeAPIError(writer, http.StatusNotFound, "package_not_found", "Package not found")
+			return
+		}
+		if err != nil {
+			writeAPIError(writer, http.StatusBadGateway, "adb_package_detail_failed", "ADB package detail failed")
+			return
+		}
+		writeJSON(writer, http.StatusOK, packageDetailResponse{
+			Device: packageDevice{
+				Serial: device.Serial,
+				State:  device.State,
+			},
+			Package: detail,
+		})
+		return
+	}
+	writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
+}
+
+func validPackageName(name string) bool {
+	if name == "" || len(name) > 255 {
+		return false
+	}
+	segments := strings.Split(name, ".")
+	for _, segment := range segments {
+		if segment == "" {
+			return false
+		}
+		for index, r := range segment {
+			if r > 127 {
+				return false
+			}
+			if index == 0 {
+				if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r == '_') {
+					return false
+				}
+				continue
+			}
+			if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func handleDeviceScreenshot(writer http.ResponseWriter, serialText string) {
