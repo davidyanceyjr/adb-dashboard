@@ -4,8 +4,8 @@
 - Last cycle ID: CYCLE-20260802-M4-S4
 - Last mode: feature
 - Last roadmap slice: M4-S4: Package Detail API
-- Last result: CYCLE READY
-- Last final phase: ready
+- Last result: committed
+- Last final phase: committed
 - Next eligible slice: M4-S5
 - Blocker: none
 
