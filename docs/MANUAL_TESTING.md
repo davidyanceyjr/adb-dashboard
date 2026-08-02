@@ -3,10 +3,11 @@
 ## Scope
 
 These steps exercise the current verified implementation level through
-`M4-S2`: local CLI behavior, configuration and startup checks, loopback server
+`M4-S3`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
-read-only package inventory API success and failure responses.
+read-only package inventory API and browser success, failure, and scope
+selection behavior.
 
 ## Requirements
 
@@ -555,15 +556,16 @@ Expected result:
   `NIY`.
 - No bootstrap token values are visible.
 - No unsupported controls or text for shell, install, uninstall, transfer,
-  reboot, jobs, sessions, artifacts, screen recording, or settings appear.
+  reboot, jobs, sessions, artifacts, package detail, screen recording, or
+  settings appear.
 
 Click `refresh`.
 
 Expected result:
 
 - Device count and list refresh from current ADB inventory.
-- Stale detail, logcat, and screenshot visible state are cleared to unavailable
-  until opened again.
+- Stale detail, logcat, screenshot, and package inventory visible state are
+  cleared to unavailable until opened again.
 
 Click `details`.
 
@@ -600,6 +602,30 @@ Expected result:
   mutation control appears.
 - No screenshot output is retained in repository data or temp directories.
 
+Click `packages`.
+
+Expected result:
+
+- Package inventory area first shows a loading state.
+- It then shows `packages: all count=N`.
+- Package rows are sorted by package name and may include version code, user
+  identifier, and APK path when reported by ADB.
+- If no package rows are returned, the package list shows `empty`.
+- If ADB becomes unavailable, the device is no longer ready, or package
+  inventory fails, the package inventory area shows `packages: unavailable`.
+- No install, uninstall, clear, stop, launch, pull, shell, file-transfer, or
+  mutation control appears.
+- No package output is retained in repository data or temp directories.
+
+Click `all`, `third-party`, and `system`.
+
+Expected result:
+
+- The package inventory area updates to the selected scope.
+- The count and rows are derived from the backend package inventory response for
+  that scope.
+- Stale package rows are cleared during loading and after failure.
+
 ## Non-Ready Device Observation
 
 If a connected device is visible but not ready, for example with state
@@ -617,6 +643,21 @@ With that non-ready serial substituted for `$SERIAL`, screenshot should return:
 - HTTP status `409`.
 - Error code `device_not_ready`.
 - No route-specific `screenshot` field.
+
+With that non-ready serial substituted for `$SERIAL`, package inventory should
+return:
+
+- HTTP status `409`.
+- Error code `device_not_ready`.
+- No route-specific `device` or `packages` field.
+
+## Current Unavailable Areas
+
+Do not manually test package detail or local APK artifact workflows as current
+behavior. The accepted roadmap lists those as future slices beginning at
+`M4-S4`; the current production server does not expose
+`/api/v1/devices/{serial}/packages/{packageName}` or `/api/v1/artifacts`
+routes.
 
 ## Shutdown
 

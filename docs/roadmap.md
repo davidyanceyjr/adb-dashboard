@@ -7,8 +7,8 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.3.0
 - Current milestone: M4
-- Next eligible slice: M4-S3
-- Last reviewed: 2026-08-01
+- Next eligible slice: M4-S4
+- Last reviewed: 2026-08-02
 
 This roadmap selects implementation order for the accepted local bootstrap,
 read-only ADB discovery, M3 read-only device inspection, M4 read-only package
@@ -919,7 +919,7 @@ Every implementation slice must:
 
 ### Slice M4-S3: Browser Package Inventory View
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Make package inventory usable from the browser for the first current
   ready device.
