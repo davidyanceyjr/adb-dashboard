@@ -4,8 +4,8 @@
 - Last cycle ID: CYCLE-20260802-M4-S5
 - Last mode: feature
 - Last roadmap slice: M4-S5: Browser Package Detail View
-- Last result: CYCLE READY
-- Last final phase: ready
+- Last result: committed
+- Last final phase: committed
 - Next eligible slice: M5-S1
 - Blocker: none
 
@@ -47,12 +47,12 @@ Blocker: none
 ## Pause State
 
 - Current phase: handoff
-- Last valid result: REVIEW PASSED for `CYCLE-20260802-M4-S5`; status `CYCLE READY`, not committed
+- Last valid result: REVIEW PASSED for `CYCLE-20260802-M4-S5`; status `committed` at `4e65fabc4cbaf005121033655406c7f4e6438c8e`
 - Changed files: `.codex/cycles/history.md`, `.codex/plans/current.md`, `cmd/adb-dashboard/main.go`, `docs/MANUAL_TESTING.md`, `docs/roadmap.md`, `tests/cli/m1_s1_cli_test.go`
 - Commands run: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5BrowserPackageDetailView/does_not_render_stale_detail_after_scope_change'` exited `1` before stale-detail fix; same command exited `0` after fix; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5'` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S[12345]'` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...` exited `0`; `git diff --check` exited `0`; `git status --short --branch` showed branch `main...origin/main` with the six modified files above
 - Passing: focused M4-S5 browser package detail tests, M4-S1 through M4-S5 package regression, broad `go test ./...`, race `go test -race ./...`, `go vet ./...`, `git diff --check`
 - Failing: none remaining
-- Not run: commit, push, PR creation, release/deployment
+- Not run: push, PR creation, release/deployment
 - Blocker: none
-- Next phase: commit and push if the next session validates the working tree and user still wants to publish; otherwise start next eligible slice `M5-S1`
+- Next phase: push if explicitly requested; otherwise start next eligible slice `M5-S1`
 - Do not touch: unrelated files outside the six changed files unless validation discovers a direct blocker
