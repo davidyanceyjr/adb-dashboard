@@ -17,8 +17,8 @@ Use `docs/ROADMAP.template.md` after the specification is accepted.
 
 ## Slice Standard
 
-One roadmap slice must produce one reviewable, observable result in one
-implementation cycle.
+One roadmap slice must produce one reviewable, observable result across three
+context gates: Implementation, Test, and Review.
 
 A valid slice has:
 
@@ -34,10 +34,10 @@ A valid slice has:
 - dependencies and risks;
 - a binary exit gate.
 
-Keep slices narrow enough that a future implementation cycle can be completed
-while the relevant contract, code, tests, and evidence fit comfortably within
-the first 30% of a typical Codex token window. This keeps the active context
-small enough to reduce drift, missed constraints, and unsupported assumptions.
+Keep slices narrow enough that each gate can complete with the relevant
+contract, code, tests, and evidence fitting comfortably within the first 30% of
+a typical Codex token window. This keeps active context small enough to reduce
+drift, missed constraints, and unsupported assumptions.
 
 If the slice cannot satisfy these fields without unrelated work or excessive
 context, split it.
@@ -74,7 +74,9 @@ Use exactly one mode.
 Requires useful failing evidence before implementation when practical.
 
 ```text
-red -> build -> green -> real path -> broad checks -> review
+implementation: red -> build
+test: focused green -> real path -> broad checks
+review: evidence and diff review
 ```
 
 ### Bug Fix
@@ -82,7 +84,9 @@ red -> build -> green -> real path -> broad checks -> review
 Requires reproduction of the defect before applying the fix.
 
 ```text
-reproduce red -> build -> regression green -> review
+implementation: reproduce red -> build
+test: regression green -> real path -> broad checks
+review: evidence and diff review
 ```
 
 ### Refactor
@@ -90,7 +94,9 @@ reproduce red -> build -> regression green -> review
 Requires a passing behavioral baseline before changing code.
 
 ```text
-baseline green -> refactor -> same behavior green -> review
+implementation: baseline green -> refactor
+test: same behavior green -> applicable broad checks
+review: evidence and diff review
 ```
 
 ### Documentation
@@ -338,9 +344,10 @@ Before changing roadmap status to `Accepted`, confirm:
 [ ] Risks and stop conditions are explicit.
 [ ] Exit gates are binary and evidence-based.
 [ ] No slice is only horizontal scaffolding.
-[ ] The next slice is small enough for one implementation cycle.
-[ ] The next slice is small enough to keep required context within roughly the
-    first 30% of a typical Codex token window.
+[ ] The next slice is small enough for separate Implementation, Test, and
+    Review gates.
+[ ] Each gate is small enough to keep required context within roughly the first
+    30% of a typical Codex token window.
 ```
 
 If any applicable item fails, use `Roadmap status: Draft`.

@@ -31,7 +31,7 @@ Every implementation slice must:
 - identify material risks and stop conditions;
 - use a binary exit gate;
 - avoid horizontal scaffolding without a working path;
-- fit one reviewable diff and one implementation cycle.
+- fit one reviewable diff across Implementation, Test, and Review gates.
 
 ## Milestone M1: Local Bootstrap
 

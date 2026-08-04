@@ -29,9 +29,9 @@ Every implementation slice must:
 - identify material risks and stop conditions;
 - use a binary exit gate;
 - avoid horizontal scaffolding without a working path;
-- fit one reviewable diff and one implementation cycle;
-- keep required contract, code, tests, and evidence context within roughly the
-  first 30% of a typical Codex token window.
+- fit one reviewable diff across Implementation, Test, and Review gates;
+- keep required contract, code, tests, and evidence context for each gate within
+  roughly the first 30% of a typical Codex token window.
 
 Split a slice when its acceptance criteria cannot be proven together without
 unrelated changes or excessive active context.

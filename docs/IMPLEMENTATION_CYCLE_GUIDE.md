@@ -73,7 +73,7 @@ $specification-roadmap audit roadmap docs/ROADMAP.md
 
 Do not implement while the selected slice is `ROADMAP BLOCKED`.
 
-### 4. Run One Slice
+### 4. Run One Slice Through Context Gates
 
 ```text
 $implementation-cycle run the next accepted roadmap slice
@@ -85,11 +85,20 @@ Or select a specific slice:
 $implementation-cycle run M1-S1 from docs/ROADMAP.md
 ```
 
-One pass means one selected slice, not the entire roadmap.
+One pass means one selected slice, not the entire roadmap. A slice is now
+completed through three context gates:
+
+```text
+Implementation cycle -> Test cycle -> Review cycle
+```
+
+The gates may run in separate invocations. Stop at a gate boundary when the
+next gate would require excessive context; record the next gate in
+`.codex/plans/current.md`.
 
 ## Phase Flow
 
-Feature:
+Feature implementation gate:
 
 ```text
 DISCOVERY READY
@@ -97,34 +106,43 @@ DISCOVERY READY
 -> DESIGN READY or DESIGN NOT REQUIRED
 -> RED CONFIRMED
 -> BUILD APPLIED
--> GREEN VERIFIED
--> DOCS SYNCED or DOCS NOT REQUIRED
--> REVIEW PASSED
--> CYCLE READY
+-> IMPLEMENTATION READY FOR TEST
 ```
 
-Bug fix:
+Bug fix implementation gate:
 
 ```text
 DISCOVERY READY
 -> RED CONFIRMED
 -> CONTRACT READY
 -> BUILD APPLIED
--> GREEN VERIFIED
--> DOCS SYNCED or DOCS NOT REQUIRED
--> REVIEW PASSED
--> CYCLE READY
+-> IMPLEMENTATION READY FOR TEST
 ```
 
-Refactor:
+Refactor implementation gate:
 
 ```text
 DISCOVERY READY
 -> BASELINE GREEN
 -> DESIGN READY or DESIGN NOT REQUIRED
 -> BUILD APPLIED
--> GREEN VERIFIED
--> DOCS SYNCED or DOCS NOT REQUIRED
+-> IMPLEMENTATION READY FOR TEST
+```
+
+Test gate:
+
+```text
+FOCUSED GREEN
+-> REAL PATH VERIFIED
+-> NEGATIVE PATHS VERIFIED or NEGATIVE PATHS NOT REQUIRED
+-> BROAD CHECKS PASSED or BROAD CHECKS BLOCKED
+-> TEST READY FOR REVIEW
+```
+
+Review gate:
+
+```text
+DOCS SYNCED or DOCS NOT REQUIRED
 -> REVIEW PASSED
 -> CYCLE READY
 ```
@@ -136,6 +154,12 @@ DISCOVERY READY
 -> CONTRACT UPDATED or DOCS SYNCED
 -> REVIEW PASSED
 -> CYCLE READY
+```
+
+Legacy phase names may appear in older history:
+
+```text
+-> GREEN VERIFIED
 ```
 
 ## Measurement Model
@@ -163,7 +187,7 @@ Evidence must be one or more of:
 
 No phase receives percentage credit.
 
-## Successful Result
+## Successful Slice Result
 
 `CYCLE READY` means:
 
@@ -179,6 +203,13 @@ No phase receives percentage credit.
 - diff review passed;
 - no unresolved blocking finding remains.
 
+`IMPLEMENTATION READY FOR TEST` means production code has changed for the
+selected behavior and any practical red or baseline evidence is recorded. It is
+not verified behavior.
+
+`TEST READY FOR REVIEW` means focused and applicable broad verification evidence
+is recorded. It is not a review result.
+
 It does not automatically mean:
 
 - committed;
@@ -192,7 +223,7 @@ Those require separate authorization and evidence.
 
 ## Repair Loops
 
-The orchestrator may repair within the selected slice.
+The orchestrator may repair within the active gate for the selected slice.
 
 ```text
 GREEN FAILED -> BUILD
@@ -237,7 +268,7 @@ Inspect:
 git diff
 ```
 
-A completed cycle should expose:
+A completed slice or gate should expose:
 
 - selected IDs;
 - phase results;

@@ -37,8 +37,9 @@ Use this checklist before running an implementation cycle.
 - [ ] Risks and stop conditions are explicit.
 - [ ] Exit gate is binary.
 - [ ] The slice is not horizontal scaffolding.
-- [ ] The slice fits one reviewable implementation cycle.
-- [ ] The slice keeps required context within roughly the first 30% of a typical
+- [ ] The slice fits one reviewable diff across Implementation, Test, and
+      Review gates.
+- [ ] Each gate keeps required context within roughly the first 30% of a typical
       Codex token window.
 
 ## Repository

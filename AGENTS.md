@@ -164,20 +164,42 @@ Use `$implementation-cycle` when the user asks to implement the next roadmap
 slice, complete one bounded feature or fix, run an implementation pass, or
 advance an active cycle.
 
+This repository separates slice work into three context gates:
+
+```text
+Implementation cycle -> Test cycle -> Review cycle
+```
+
+Each gate may be run in a separate invocation to control context usage. Do not
+collapse the gates merely to claim readiness.
+
 The implementation cycle is:
 
 ```text
-discover -> contract -> design-if-needed -> red -> build -> green
-         -> documentation-sync -> review -> ready
+discover -> contract -> design-if-needed -> red-or-baseline -> build
+         -> docs-if-obviously-required -> implementation-ready-for-test
 ```
 
-The cycle may route backward:
+The test cycle is:
+
+```text
+focused-green -> real-path-exercise -> negative-path-checks
+              -> applicable-broad-checks -> test-ready-for-review
+```
+
+The review cycle is:
+
+```text
+diff-review -> evidence-review -> docs-review -> ready
+```
+
+The gates may route backward:
 
 ```text
 contract blocked    -> contract
 red invalid         -> contract or test
 build blocked       -> contract or design
-green failed        -> build
+focused test failed -> build
 docs conflict       -> contract
 review finding      -> owning phase
 ```
@@ -191,13 +213,17 @@ discover -> contract/document -> review -> ready
 For behavior-preserving refactoring:
 
 ```text
-discover -> baseline-green -> design-if-needed -> build -> green -> review
+discover -> baseline-green -> design-if-needed -> build
+test cycle verifies unchanged behavior
+review cycle confirms scope and evidence
 ```
 
-One invocation of `$implementation-cycle` should continue through every
-applicable phase in the selected slice without asking for routine confirmation.
-Stop only for a genuine blocker, a destructive or external write requiring
-approval, or a material expansion of scope.
+One invocation of `$implementation-cycle` should finish the Implementation gate
+for the selected slice. It may stop before Test or Review when continuing would
+consume excessive context; record the next gate explicitly in
+`.codex/plans/current.md`. Stop only for a genuine blocker, a destructive or
+external write requiring approval, a material expansion of scope, or a context
+gate boundary.
 
 The orchestrator may read sibling skill files for phase-specific procedure.
 Phase skills may also be invoked directly for narrowly scoped work.
@@ -218,7 +244,7 @@ The active cycle must record:
 - focused test command;
 - real-path exercise command or procedure;
 - broad verification commands;
-- current phase and result;
+- current gate, phase, and result;
 - exact evidence from completed phases;
 - blocker and next phase.
 
@@ -262,7 +288,7 @@ Do not mix unrelated cleanup into a behavior slice.
 
 ## Required Implementation Pass
 
-For each code-bearing cycle:
+For each code-bearing slice, the gates together must satisfy:
 
 1. Inspect repository instructions, relevant implementation, tests, and
    version-control state.
@@ -274,14 +300,14 @@ For each code-bearing cycle:
 7. Add or update a meaningful acceptance or regression test.
 8. Run it and obtain useful failing evidence when practical.
 9. Implement the smallest complete production path.
-10. Run the focused test until it passes.
-11. Exercise the real path and inspect output, status, side effects, lifecycle,
+10. In the Test gate, run the focused test until it passes.
+11. In the Test gate, exercise the real path and inspect output, status, side effects, lifecycle,
     and failure behavior.
 12. Synchronize behavior-facing documentation when required.
-13. Run applicable broader repository checks.
-14. Review the diff for SLOP, placeholders, dead code, unsupported claims,
+13. In the Test gate, run applicable broader repository checks.
+14. In the Review gate, review the diff for SLOP, placeholders, dead code, unsupported claims,
     accidental scope growth, and unrelated changes.
-15. Report exact evidence and readiness.
+15. Report exact evidence and current status for the completed gate.
 16. Commit only when the user or repository workflow authorizes committing.
 
 A meaningful failing test reaches the intended boundary or fails because that

@@ -1,6 +1,6 @@
 ---
 name: cycle-test
-description: Create and run measurable red, baseline-green, green, and broader verification for one implementation cycle. Trigger on failing acceptance tests, regression reproduction, focused verification, real-path exercise, or cycle evidence. Do not repair production code.
+description: Create and run measurable red, baseline-green, green, real-path, negative-path, and broader verification for one selected slice or Test gate. Trigger on failing acceptance tests, regression reproduction, focused verification, real-path exercise, or cycle evidence. Do not repair production code.
 ---
 
 # Cycle Testing And Evidence

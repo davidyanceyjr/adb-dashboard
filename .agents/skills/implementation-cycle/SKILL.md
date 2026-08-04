@@ -1,6 +1,6 @@
 ---
 name: implementation-cycle
-description: Run one complete, measurable implementation or documentation cycle from specification and roadmap through tests, code, documentation sync, and review. Trigger on "implementation pass", "next roadmap slice", "run the cycle", "complete this slice", "cycle status", "resume cycle", or "advance cycle". Do not use for an isolated single-phase request.
+description: Run one measurable Implementation gate for a bounded slice, or resume the next recorded Test or Review gate when explicitly requested. Trigger on "implementation pass", "next roadmap slice", "run the cycle", "complete this slice", "cycle status", "resume cycle", or "advance cycle". Do not use for an isolated single-phase request.
 ---
 
 # Measurable Implementation Cycle
@@ -10,12 +10,12 @@ any repository rule.
 
 ## Objective
 
-Produce one measurable pass for exactly one roadmap slice or equivalently
+Produce one measurable gate for exactly one roadmap slice or equivalently
 bounded user request.
 
-Continue through all applicable phases in the same run. Do not stop after
-planning, tests, scaffolding, or implementation if the next safe local phase can
-be completed now.
+The default gate is Implementation. Test and Review are separate context gates
+and may run in later invocations when the active state names them as next.
+Do not claim slice readiness until all three gates have evidence.
 
 Stop only for:
 
@@ -24,7 +24,9 @@ Stop only for:
   or permission;
 - destructive or external action requiring approval;
 - material scope expansion;
-- a verification failure that cannot be repaired within the selected slice;
+- a verification failure that cannot be repaired within the selected gate;
+- the boundary between Implementation, Test, and Review gates when continuing
+  would consume excessive context;
 - the repair-loop limit.
 
 ## Files To Read
@@ -76,25 +78,31 @@ refactor
 documentation
 ```
 
-### Feature
+## Context Gates
 
 ```text
-discover -> contract -> design-if-needed -> red -> build -> green
-         -> documentation-sync -> review -> ready
+Implementation cycle -> Test cycle -> Review cycle
 ```
 
-### Bug fix
+### Feature Implementation Gate
 
 ```text
-discover -> reproduce-red -> contract-confirmation -> build -> green
-         -> documentation-sync-if-needed -> review -> ready
+discover -> contract -> design-if-needed -> red -> build
+         -> implementation-ready-for-test
 ```
 
-### Refactor
+### Bug Fix Implementation Gate
 
 ```text
-discover -> baseline-green -> design-if-needed -> build -> green
-         -> documentation-sync-if-needed -> review -> ready
+discover -> reproduce-red -> contract-confirmation -> build
+         -> implementation-ready-for-test
+```
+
+### Refactor Implementation Gate
+
+```text
+discover -> baseline-green -> design-if-needed -> build
+         -> implementation-ready-for-test
 ```
 
 ### Documentation
@@ -130,6 +138,7 @@ Focused test command
 Real-path command or procedure
 Broad verification commands
 Current phase
+Current gate
 Phase results
 Blocker
 Next phase
@@ -170,8 +179,15 @@ BASELINE FAILED
 BUILD APPLIED
 BUILD PARTIAL
 BUILD BLOCKED
+IMPLEMENTATION READY FOR TEST
+FOCUSED GREEN
 GREEN VERIFIED
 GREEN FAILED
+REAL PATH VERIFIED
+NEGATIVE PATHS VERIFIED
+NEGATIVE PATHS NOT REQUIRED
+BROAD CHECKS PASSED
+BROAD CHECKS BLOCKED
 VERIFICATION BLOCKED
 DOCS SYNCED
 DOCS NOT REQUIRED
@@ -179,6 +195,7 @@ DOCS BLOCKED
 REVIEW PASSED
 REVIEW FAILED
 REVIEW BLOCKED
+TEST READY FOR REVIEW
 CYCLE READY
 CYCLE BLOCKED
 CYCLE ABANDONED
@@ -248,9 +265,11 @@ reason.
 
 Read `cycle-build` and implement the smallest complete production path.
 
-`BUILD APPLIED` does not mean verified. Continue immediately to green testing.
+`BUILD APPLIED` does not mean verified. End the Implementation gate with
+`IMPLEMENTATION READY FOR TEST` when the production path is present and state
+records the exact Test gate command or procedure to run next.
 
-### 6. Green And Verification
+### 6. Test Gate
 
 Read `cycle-test` in green mode.
 
@@ -265,16 +284,15 @@ If green fails, return to build with a repair packet. Limit build-green repair
 loops to three per cycle run. After the third failed loop, return
 `CYCLE BLOCKED` with exact evidence.
 
-### 7. Documentation Synchronization
+End with `TEST READY FOR REVIEW` when focused, real-path, negative-path, and
+applicable broad evidence is recorded.
 
-Read `cycle-document`.
+### 7. Review Gate
 
-Synchronize public or durable documentation when behavior, interfaces,
-configuration, errors, operations, compatibility, or examples changed.
+Read `cycle-document` before review when behavior, interfaces, configuration,
+errors, operations, compatibility, or examples changed.
 
 Record `DOCS NOT REQUIRED` only with a reason.
-
-### 8. Review
 
 Read `cycle-review`.
 
@@ -285,7 +303,7 @@ A material review finding must identify its owning return phase. Apply at most
 two review repair loops in the same cycle run. Rerun every invalidated gate.
 After two unsuccessful review repair loops, return `CYCLE BLOCKED`.
 
-### 9. Ready Or Close
+### 8. Ready Or Close
 
 `CYCLE READY` requires `REVIEW PASSED` and all applicable gates.
 
@@ -320,7 +338,8 @@ Use exactly this structure:
 - Cycle:
 - Mode:
 - Slice:
-- Result: CYCLE READY | CYCLE BLOCKED | CYCLE ABANDONED
+- Gate: Implementation | Test | Review
+- Result: IMPLEMENTATION READY FOR TEST | TEST READY FOR REVIEW | CYCLE READY | CYCLE BLOCKED | CYCLE ABANDONED
 - Final phase:
 
 ## Delivered

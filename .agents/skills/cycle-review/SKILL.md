@@ -1,11 +1,12 @@
 ---
 name: cycle-review
-description: Review one completed cycle for contract traceability, meaningful evidence, focused scope, no-SLOP compliance, safety, documentation sync, and commit readiness. Trigger after green verification or documentation completion. Do not treat lint or formatting as functional proof.
+description: Review one Test-ready slice or Review gate for contract traceability, meaningful evidence, focused scope, no-SLOP compliance, safety, documentation sync, and commit readiness. Trigger after Test gate verification or documentation completion. Do not treat lint or formatting as functional proof.
 ---
 
 # Cycle Review
 
-Follow `AGENTS.md`. Own readiness assessment for one cycle.
+Follow `AGENTS.md`. Own readiness assessment for one selected slice at the
+Review gate.
 
 ## Inputs
 

@@ -1,6 +1,6 @@
 ---
 name: cycle-build
-description: Implement the smallest complete production change for one cycle after a confirmed contract and red test or approved baseline. Trigger on the build phase, focused bug fix, or implementation repair packet. Do not claim functional verification.
+description: Implement the smallest complete production change for one Implementation gate after a confirmed contract and red test or approved baseline. Trigger on the build phase, focused bug fix, or implementation repair packet. Do not claim functional verification.
 ---
 
 # Cycle Build
