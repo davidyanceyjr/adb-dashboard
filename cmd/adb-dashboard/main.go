@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -59,6 +64,8 @@ Options:
 
 const maxPackageOutputBytes = 1 << 20
 const maxPackageSummaryLines = 50
+const maxArtifactSizeBytes = 256 << 20
+const maxArtifactMultipartBytes = maxArtifactSizeBytes + (1 << 20)
 
 var errPackageNotFound = errors.New("package not found")
 
@@ -1217,6 +1224,20 @@ type bootstrapResponse struct {
 	StatusURL      string `json:"statusUrl"`
 }
 
+type artifactUploadResponse struct {
+	Artifact artifactMetadata `json:"artifact"`
+}
+
+type artifactMetadata struct {
+	ID             string `json:"id"`
+	OriginalName   string `json:"originalName"`
+	SizeBytes      int64  `json:"sizeBytes"`
+	SHA256         string `json:"sha256"`
+	ContentType    string `json:"contentType,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+	AnalysisStatus string `json:"analysisStatus"`
+}
+
 type errorEnvelope struct {
 	Error apiError `json:"error"`
 }
@@ -1244,7 +1265,7 @@ func serveDashboard(cfg config, stderr *os.File) int {
 	startedAt := time.Now()
 	actualAddr := listener.Addr().String()
 	server := &http.Server{
-		Handler: dashboardHandler(startedAt, actualAddr, cfg.readOnly.value, tokens),
+		Handler: dashboardHandler(startedAt, actualAddr, cfg.readOnly.value, cfg.dataDir.value, tokens),
 	}
 
 	serverErr := make(chan error, 1)
@@ -1285,7 +1306,7 @@ func serveDashboard(cfg config, stderr *os.File) int {
 	}
 }
 
-func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bootstrapResponse) http.Handler {
+func dashboardHandler(startedAt time.Time, bind string, readOnly bool, dataDir string, tokens bootstrapResponse) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/" || request.Method != http.MethodGet {
@@ -1426,10 +1447,248 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, tokens bo
 		}
 		writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
 	})
+	mux.HandleFunc("/api/v1/artifacts", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			writeUnknownRoute(writer)
+			return
+		}
+		handleArtifactUpload(writer, request, dataDir)
+	})
 	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
 		writeUnknownRoute(writer)
 	})
 	return securityPolicyHandler(bind, mux)
+}
+
+type stagedArtifact struct {
+	id           string
+	dir          string
+	tempPath     string
+	finalPath    string
+	originalName string
+	sizeBytes    int64
+	sha256       string
+	contentType  string
+}
+
+var errInvalidArtifactUpload = errors.New("invalid artifact upload")
+var errArtifactStorageUnavailable = errors.New("artifact storage unavailable")
+
+func handleArtifactUpload(writer http.ResponseWriter, request *http.Request, dataDir string) {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/form-data" {
+		writeAPIError(writer, http.StatusUnsupportedMediaType, "unsupported_artifact_media", "Unsupported artifact media type")
+		return
+	}
+	if request.ContentLength > maxArtifactMultipartBytes {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_artifact_upload", "Invalid artifact upload")
+		return
+	}
+
+	request.Body = http.MaxBytesReader(writer, request.Body, maxArtifactMultipartBytes)
+	reader, err := request.MultipartReader()
+	if err != nil {
+		writeAPIError(writer, http.StatusUnsupportedMediaType, "unsupported_artifact_media", "Unsupported artifact media type")
+		return
+	}
+
+	var staged *stagedArtifact
+	artifactParts := 0
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			cleanupStagedArtifact(staged)
+			writeAPIError(writer, http.StatusBadRequest, "invalid_artifact_upload", "Invalid artifact upload")
+			return
+		}
+
+		fileName := part.FileName()
+		if fileName == "" {
+			_, _ = io.Copy(io.Discard, part)
+			_ = part.Close()
+			continue
+		}
+		if part.FormName() != "artifact" || artifactParts > 0 {
+			_ = part.Close()
+			cleanupStagedArtifact(staged)
+			writeAPIError(writer, http.StatusBadRequest, "invalid_artifact_upload", "Invalid artifact upload")
+			return
+		}
+		artifactParts++
+
+		staged, err = stageArtifactPart(dataDir, fileName, part)
+		_ = part.Close()
+		if errors.Is(err, errArtifactStorageUnavailable) {
+			cleanupStagedArtifact(staged)
+			writeAPIError(writer, http.StatusInsufficientStorage, "artifact_storage_unavailable", "Artifact storage is unavailable")
+			return
+		}
+		if err != nil {
+			cleanupStagedArtifact(staged)
+			writeAPIError(writer, http.StatusBadRequest, "invalid_artifact_upload", "Invalid artifact upload")
+			return
+		}
+	}
+	if artifactParts != 1 || staged == nil {
+		cleanupStagedArtifact(staged)
+		writeAPIError(writer, http.StatusBadRequest, "invalid_artifact_upload", "Invalid artifact upload")
+		return
+	}
+
+	metadata := artifactMetadata{
+		ID:             staged.id,
+		OriginalName:   staged.originalName,
+		SizeBytes:      staged.sizeBytes,
+		SHA256:         staged.sha256,
+		ContentType:    staged.contentType,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+		AnalysisStatus: "pending",
+	}
+	if err := finalizeArtifact(staged, metadata); err != nil {
+		cleanupStagedArtifact(staged)
+		writeAPIError(writer, http.StatusInsufficientStorage, "artifact_storage_unavailable", "Artifact storage is unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusCreated, artifactUploadResponse{Artifact: metadata})
+}
+
+func stageArtifactPart(dataDir, fileName string, part *multipart.Part) (*stagedArtifact, error) {
+	originalName := artifactOriginalName(fileName)
+	if originalName == "" || !strings.EqualFold(filepath.Ext(originalName), ".apk") {
+		return nil, errInvalidArtifactUpload
+	}
+
+	id, err := randomArtifactID()
+	if err != nil {
+		return nil, errArtifactStorageUnavailable
+	}
+	artifactDir := filepath.Join(dataDir, "artifacts", id)
+	staged := &stagedArtifact{
+		id:           id,
+		dir:          artifactDir,
+		tempPath:     filepath.Join(artifactDir, "upload.tmp"),
+		finalPath:    filepath.Join(artifactDir, "original.apk"),
+		originalName: originalName,
+	}
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		return staged, errArtifactStorageUnavailable
+	}
+	tempFile, err := os.OpenFile(staged.tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return staged, errArtifactStorageUnavailable
+	}
+
+	hasher := sha256.New()
+	limited := &io.LimitedReader{R: part, N: maxArtifactSizeBytes + 1}
+	buffer := make([]byte, 32*1024)
+	firstBytes := make([]byte, 0, 4)
+	var size int64
+	for {
+		n, readErr := limited.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
+			if len(firstBytes) < 4 {
+				needed := 4 - len(firstBytes)
+				if needed > len(chunk) {
+					needed = len(chunk)
+				}
+				firstBytes = append(firstBytes, chunk[:needed]...)
+			}
+			if _, err := tempFile.Write(chunk); err != nil {
+				_ = tempFile.Close()
+				return staged, errArtifactStorageUnavailable
+			}
+			if _, err := hasher.Write(chunk); err != nil {
+				_ = tempFile.Close()
+				return staged, errArtifactStorageUnavailable
+			}
+			size += int64(n)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = tempFile.Close()
+			return staged, errInvalidArtifactUpload
+		}
+	}
+	if err := tempFile.Close(); err != nil {
+		return staged, errArtifactStorageUnavailable
+	}
+	if limited.N == 0 || size == 0 || !hasZIPSignature(firstBytes) {
+		return staged, errInvalidArtifactUpload
+	}
+	staged.sizeBytes = size
+	staged.sha256 = hex.EncodeToString(hasher.Sum(nil))
+	partMediaType := part.Header.Get("Content-Type")
+	if contentType, _, err := mime.ParseMediaType(partMediaType); err == nil {
+		staged.contentType = contentType
+	} else {
+		staged.contentType = partMediaType
+	}
+	return staged, nil
+}
+
+func artifactOriginalName(fileName string) string {
+	normalized := strings.ReplaceAll(fileName, "\\", "/")
+	return pathBase(normalized)
+}
+
+func pathBase(value string) string {
+	index := strings.LastIndex(value, "/")
+	if index >= 0 {
+		value = value[index+1:]
+	}
+	if value == "." || value == ".." {
+		return ""
+	}
+	return value
+}
+
+func hasZIPSignature(firstBytes []byte) bool {
+	if len(firstBytes) < 4 || firstBytes[0] != 'P' || firstBytes[1] != 'K' {
+		return false
+	}
+	return firstBytes[2] == 0x03 && firstBytes[3] == 0x04 ||
+		firstBytes[2] == 0x05 && firstBytes[3] == 0x06 ||
+		firstBytes[2] == 0x07 && firstBytes[3] == 0x08
+}
+
+func finalizeArtifact(staged *stagedArtifact, metadata artifactMetadata) error {
+	if err := os.Rename(staged.tempPath, staged.finalPath); err != nil {
+		return errArtifactStorageUnavailable
+	}
+	var body bytes.Buffer
+	encoder := json.NewEncoder(&body)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(artifactUploadResponse{Artifact: metadata}); err != nil {
+		return errArtifactStorageUnavailable
+	}
+	tempMetadataPath := filepath.Join(staged.dir, "metadata.json.tmp")
+	if err := os.WriteFile(tempMetadataPath, body.Bytes(), 0o600); err != nil {
+		return errArtifactStorageUnavailable
+	}
+	if err := os.Rename(tempMetadataPath, filepath.Join(staged.dir, "metadata.json")); err != nil {
+		return errArtifactStorageUnavailable
+	}
+	return nil
+}
+
+func cleanupStagedArtifact(staged *stagedArtifact) {
+	if staged != nil {
+		_ = os.RemoveAll(staged.dir)
+	}
+}
+
+func randomArtifactID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func handleDeviceLogcat(writer http.ResponseWriter, request *http.Request, serialText string) {

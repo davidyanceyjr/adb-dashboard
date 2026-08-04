@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.3.0
 - Current milestone: M5
-- Next eligible slice: M5-S1
+- Next eligible slice: M5-S2
 - Last reviewed: 2026-08-02
 
 This roadmap selects implementation order for the accepted local bootstrap,
@@ -1089,7 +1089,7 @@ Every implementation slice must:
 
 ### Slice M5-S1: Artifact Upload API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Accept one local APK-like artifact upload and persist it atomically
   under the resolved data directory.
@@ -1098,21 +1098,24 @@ Every implementation slice must:
   `DATA-006`, `DATA-007`
 - Observable result: A same-origin HTTP client can upload one APK-like ZIP,
   receive artifact metadata, restart the server, and observe the stored file and
-  metadata still present, while invalid and rejected requests leave no partial
-  final artifact.
+  metadata still present, while invalid, unsupported media type, interrupted,
+  and rejected requests leave no partial final artifact.
 - Primary acceptance boundary: HTTP request through the running server with an
   isolated data directory.
 - Expected red or baseline-green evidence: The focused HTTP/filesystem test
   fails because `POST /api/v1/artifacts` is absent, upload metadata is not
-  persisted, invalid uploads are accepted, partial final files remain, or
-  rejected security requests store body data.
+  persisted, invalid uploads are accepted, unsupported media type uploads do
+  not return HTTP `415` with code `unsupported_artifact_media`, interrupted or
+  short-body uploads leave temporary or partial final files, or rejected
+  security requests store body data.
 - Focused verification command or deterministic discovery rule: Discover the
   focused artifact upload API test command and record it in
   `.codex/plans/current.md` before implementation begins.
 - Real-path exercise: Start the server with an isolated data directory, upload
   a disposable APK-like ZIP, inspect HTTP `201` metadata and stored files,
   restart the server, inspect stored file and metadata persistence, repeat
-  invalid upload and rejected Host/Origin cases, and inspect partial-file
+  invalid upload, unsupported media type, cancellation or short-body, and
+  rejected Host/Origin cases, and inspect temporary-file and partial-final-file
   absence.
 - Broad verification: Run applicable repository test, formatting, lint,
   type-check, build, browser-script, API, and filesystem checks discovered from
@@ -1127,7 +1130,8 @@ Every implementation slice must:
   - 256 MiB size limit enforcement.
   - Atomic stored artifact file and metadata creation.
   - Restart-visible artifact file and metadata persistence.
-  - Invalid upload, storage failure, and security rejection.
+  - Invalid upload, unsupported media type, storage failure, cancellation or
+    short-body cleanup, and security rejection.
 - Out of scope:
   - Browser upload UI, artifact detail UI, APK analysis, artifact deletion,
     install, external network calls, artifact reports, indexes, jobs, and
@@ -1145,10 +1149,13 @@ Every implementation slice must:
   it exists; otherwise record `DOCS NOT REQUIRED` with reason.
 - Exit gate: `AC-018-001` through `AC-018-003` have green HTTP/filesystem
   evidence, restart inspection proves persistence, rejected security requests
-  store no body data, invalid uploads leave no partial final artifacts,
-  applicable broad checks pass or have recorded blockers, and review passes.
+  store no body data, unsupported media type returns HTTP `415` with code
+  `unsupported_artifact_media`, invalid uploads leave no partial final
+  artifacts, cancellation or short-body cleanup leaves no temporary or partial
+  final files, applicable broad checks pass or have recorded blockers, and
+  review passes.
 - Completion evidence reference: `.codex/plans/current.md` and
-  `.codex/cycles/history.md`.
+  `.codex/cycles/history.md` after `CYCLE-20260803-M5-S1` closure.
 
 ### Slice M5-S2: Artifact Catalog And Detail API
 

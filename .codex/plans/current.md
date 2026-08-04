@@ -1,58 +1,44 @@
 # Active Cycle
 
 - Status: inactive
-- Last cycle ID: CYCLE-20260802-M4-S5
+- Last cycle ID: CYCLE-20260803-M5-S1
 - Last mode: feature
-- Last roadmap slice: M4-S5: Browser Package Detail View
-- Last result: committed
-- Last final phase: committed
-- Next eligible slice: M5-S1
+- Last roadmap slice: M5-S1: Artifact Upload API
+- Last result: verified
+- Last final phase: ready
+- Next eligible slice: M5-S2
 - Blocker: none
 
 ## Last Evidence
 
-- Focused red: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5'` exited `1`; browser inventory rendered but clicking `package-detail-com.example.alpha` did not render package detail state.
-- Review repair red: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5BrowserPackageDetailView/does_not_render_stale_detail_after_scope_change'` exited `1`; delayed package detail response rendered stale detail after a package scope change.
-- Review repair test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5BrowserPackageDetailView/does_not_render_stale_detail_after_scope_change'` exited `0`.
-- Focused test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5'` exited `0`.
-- Package regression: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S[12345]'` exited `0`.
-- Real path: built `adb-dashboard`, started `serve --listen 127.0.0.1:0 --no-open` with deterministic fake ADB, ran the embedded browser script with Node, clicked package inventory and `package-detail-com.example.alpha`, observed visible selected serial/package, parsed detail fields, bounded summary lines, exact fake ADB command logs, and retained-output path count `0`.
+- Focused red: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM5S1ArtifactUploadAPI'` exited `1`; upload cases reached the running server and returned HTTP `404` with code `not_found` because `POST /api/v1/artifacts` was absent.
+- Focused test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM5S1ArtifactUploadAPI'` exited `0`, including valid upload persistence, missing, duplicate, empty, non-APK, non-ZIP, oversized, unsupported media type, short-body cleanup, storage failure, and Host/Origin security rejection.
+- Real path: built `.codex/cache/adb-dashboard-m5s1`, started `serve --listen 127.0.0.1:0 --data-dir <isolated> --no-open`, uploaded a disposable APK-like ZIP, observed `upload_status=201 artifact_id=eLerbEVgGWmfFiy62QYrqg`, restarted with the same data directory, observed `restart_persistence=ok`, exercised unsupported media, invalid upload, short-body, and foreign Origin cases, and observed `artifact_dirs=1 temp_files=0`.
 - Broad test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...` exited `0`.
-- Race test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...` exited `0`.
+- Race test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...` exited `1` once in existing `TestM4S3BrowserPackageInventoryView/loads_scopes_and_empty_state_from_backend` due fake ADB command ordering under race instrumentation; narrow rerun of that test exited `0`; full race rerun exited `0`.
 - Static check: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...` exited `0`.
 - Diff whitespace check: `git diff --check` exited `0`.
-- Documentation sync: `docs/MANUAL_TESTING.md` updated for browser package detail behavior; `docs/roadmap.md` marks M4-S5 verified and M5-S1 next eligible.
+- Documentation sync: `docs/MANUAL_TESTING.md` documents M5-S1 artifact upload behavior; `docs/roadmap.md` marks M5-S1 verified and M5-S2 next eligible.
+- Verification scope note: no further full-suite reruns were performed after the 2026-08-03 broad checks; future non-milestone cycles should prefer narrow checks until a milestone marker requires a full suite.
 
 ## Last Review
 
 Phase: review
 Result: REVIEW PASSED
 Evidence:
-- `AC-017-004` is covered by browser-boundary evidence asserting row detail opening, selected serial/package name, loading state, failure state, parsed version/installer/install-time/permission fields, bounded summary lines, production API command vector, stderr/HOME/ADB version omission, unsupported-control absence, and no retained output paths.
-- Review repair evidence covers delayed package detail responses after package scope changes; stale responses no longer overwrite cleared detail.
-- Production diff is limited to package detail rendering, same-origin detail fetch behavior, and stale-response invalidation in the existing embedded browser shell.
-- Test diff is limited to M4-S5 browser-boundary coverage, stale-detail regression coverage, deterministic dynamic DOM support for existing frontend tests, and narrowed unsupported-control assertions that no longer reject read-only install-time metadata.
-- Documentation and roadmap are synchronized with verified M4-S5 behavior.
-- No placeholders, test-only production hooks, new dependencies, package mutation commands, retained package output paths, unsupported browser mutation controls, or unrelated cleanup were found in review.
+- `AC-018-001` is covered by HTTP/filesystem evidence for valid APK-like ZIP upload, HTTP `201` metadata, SHA-256 and byte size, stored `original.apk`, stored `metadata.json`, no ADB/browser side effects, and persistence after server restart.
+- `AC-018-002` is covered by HTTP/filesystem evidence for missing, duplicate, empty, non-APK, non-ZIP, oversized, storage-failing, unsupported media type, and short-body uploads with documented status/error codes and no partial artifact directory or temporary upload files.
+- `AC-018-003` is covered by Host and Origin rejection evidence returning the standard security envelope before artifact storage.
+- Production diff is limited to the `POST /api/v1/artifacts` route, artifact streaming validation, atomic file/metadata persistence, and cleanup helpers in the existing server entry point.
+- Test diff is limited to M5-S1 process/HTTP/filesystem integration coverage and reusable HTTP helpers needed for multipart and raw short-body requests.
+- Documentation and roadmap are synchronized with verified M5-S1 behavior.
+- No placeholders, test-only production hooks, new dependencies, external network calls, ADB/install invocation, host path disclosure, or unrelated cleanup were found in review.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
 - `cmd/adb-dashboard/main.go`
-- `tests/cli/m1_s1_cli_test.go`
 - `docs/MANUAL_TESTING.md`
 - `docs/roadmap.md`
-Next: none
+- `tests/cli/m1_s1_cli_test.go`
+Next: commit if explicitly requested; otherwise start next eligible slice `M5-S2` with narrow verification by default.
 Blocker: none
-
-## Pause State
-
-- Current phase: handoff
-- Last valid result: REVIEW PASSED for `CYCLE-20260802-M4-S5`; status `committed` at `4e65fabc4cbaf005121033655406c7f4e6438c8e`
-- Changed files: `.codex/cycles/history.md`, `.codex/plans/current.md`, `cmd/adb-dashboard/main.go`, `docs/MANUAL_TESTING.md`, `docs/roadmap.md`, `tests/cli/m1_s1_cli_test.go`
-- Commands run: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5BrowserPackageDetailView/does_not_render_stale_detail_after_scope_change'` exited `1` before stale-detail fix; same command exited `0` after fix; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S5'` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM4S[12345]'` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -race -count=1 ./...` exited `0`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...` exited `0`; `git diff --check` exited `0`; `git status --short --branch` showed branch `main...origin/main` with the six modified files above
-- Passing: focused M4-S5 browser package detail tests, M4-S1 through M4-S5 package regression, broad `go test ./...`, race `go test -race ./...`, `go vet ./...`, `git diff --check`
-- Failing: none remaining
-- Not run: push, PR creation, release/deployment
-- Blocker: none
-- Next phase: push if explicitly requested; otherwise start next eligible slice `M5-S1`
-- Do not touch: unrelated files outside the six changed files unless validation discovers a direct blocker

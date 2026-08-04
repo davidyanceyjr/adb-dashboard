@@ -3,11 +3,11 @@
 ## Scope
 
 These steps exercise the current verified implementation level through
-`M4-S4`: local CLI behavior, configuration and startup checks, loopback server
+`M5-S1`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
 read-only package inventory API/browser behavior plus package detail API
-behavior.
+behavior and local APK artifact upload API behavior.
 
 ## Requirements
 
@@ -734,11 +734,71 @@ return:
 - Error code `device_not_ready`.
 - No route-specific `device`, `package`, or `packages` field.
 
-## Current Unavailable Areas
+## Artifact Upload API
 
-Do not manually test local APK artifact workflows as current behavior. The
-accepted roadmap lists those as future slices beginning at `M5-S1`; the
-production server does not expose `/api/v1/artifacts` routes.
+Create a disposable APK-like ZIP and upload it:
+
+```sh
+python3 - <<'PY'
+import zipfile
+with zipfile.ZipFile(".codex/tmp/manual-upload.apk", "w") as z:
+    z.writestr("AndroidManifest.xml", "<manifest package=\"com.example.manual\" />")
+PY
+
+curl -i -sS -H "Origin: http://$ADDR" \
+  -F "artifact=@.codex/tmp/manual-upload.apk;filename=manual-upload.apk;type=application/vnd.android.package-archive" \
+  "http://$ADDR/api/v1/artifacts"
+```
+
+Expected result:
+
+- HTTP status is `201`.
+- JSON includes `artifact.id`, `artifact.originalName`,
+  `artifact.sizeBytes`, `artifact.sha256`, `artifact.createdAt`, and
+  `artifact.analysisStatus` equal to `pending`.
+- `$DATA_DIR/artifacts/ARTIFACT_ID/original.apk` exists and matches the
+  uploaded bytes.
+- `$DATA_DIR/artifacts/ARTIFACT_ID/metadata.json` exists.
+- Restarting the server with the same `$DATA_DIR` preserves both files.
+- No ADB command runs, no APK is installed, and no host filesystem path is
+  exposed in the response.
+
+Check invalid and unsupported upload behavior:
+
+```sh
+printf 'not a zip' > .codex/tmp/manual-invalid.apk
+
+curl -i -sS \
+  -F "artifact=@.codex/tmp/manual-invalid.apk;filename=manual-invalid.apk;type=application/vnd.android.package-archive" \
+  "http://$ADDR/api/v1/artifacts"
+
+curl -i -sS -H "Content-Type: application/octet-stream" \
+  --data-binary @.codex/tmp/manual-upload.apk \
+  "http://$ADDR/api/v1/artifacts"
+```
+
+Expected result:
+
+- Non-ZIP `.apk` upload returns HTTP `400` with code
+  `invalid_artifact_upload`.
+- Unsupported request media returns HTTP `415` with code
+  `unsupported_artifact_media`.
+- Failed uploads leave no additional artifact directory, no `original.apk`, and
+  no temporary upload file.
+
+Check security rejection:
+
+```sh
+curl -i -sS -H "Origin: http://foreign.example" \
+  -F "artifact=@.codex/tmp/manual-upload.apk;filename=blocked.apk;type=application/vnd.android.package-archive" \
+  "http://$ADDR/api/v1/artifacts"
+```
+
+Expected result:
+
+- HTTP status is `403`.
+- Error code is `forbidden_origin`.
+- No request body is stored and no artifact metadata is created.
 
 ## Shutdown
 
@@ -765,7 +825,8 @@ Remove the disposable manual-test files when they are no longer needed:
 
 ```sh
 rm -rf .codex/tmp/manual-data .codex/tmp/manual-temp \
-  .codex/tmp/manual-screenshot-response.bin .codex/tmp/adb-dashboard
+  .codex/tmp/manual-screenshot-response.bin .codex/tmp/manual-upload.apk \
+  .codex/tmp/manual-invalid.apk .codex/tmp/adb-dashboard
 ```
 
 Do not remove `.codex/cache` directories; they may be used by repository test

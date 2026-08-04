@@ -1,14 +1,19 @@
 package cli_test
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"os/exec"
@@ -3568,6 +3573,223 @@ exit 17
 	})
 }
 
+func TestM5S1ArtifactUploadAPI(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("valid_upload_persists_after_restart", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		apk := apkLikeZip(t)
+		wantSHA := sha256.Sum256(apk)
+
+		first := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		firstAddr := serverAddressFromStartLine(t, first.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		firstBaseURL := "http://" + firstAddr
+
+		response := requestArtifactUpload(t, firstBaseURL, "Example.APK", "application/vnd.android.package-archive", apk, map[string]string{
+			"Origin": firstBaseURL,
+		})
+		if response.statusCode != http.StatusCreated {
+			t.Fatalf("upload status = %d, want 201; body = %s", response.statusCode, response.body)
+		}
+		if !strings.HasPrefix(response.contentType, "application/json") {
+			t.Fatalf("upload content type = %q, want application/json", response.contentType)
+		}
+		artifact := assertArtifactUploadJSON(t, response.body, "Example.APK", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+		artifactDir := filepath.Join(dataDir, "artifacts", artifact.ID)
+		assertFileBytes(t, filepath.Join(artifactDir, "original.apk"), apk)
+		assertArtifactMetadataFile(t, filepath.Join(artifactDir, "metadata.json"), artifact)
+		assertPathAbsent(t, values["ADB_MARKER"])
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+
+		first.signal(t, syscall.SIGTERM)
+		result := first.wait(t)
+		if result.code != 0 {
+			t.Fatalf("first server exit status = %d, want 0; stderr = %q", result.code, result.stderr)
+		}
+
+		second := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer second.cleanup(t)
+		_ = second.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`))
+		assertFileBytes(t, filepath.Join(artifactDir, "original.apk"), apk)
+		assertArtifactMetadataFile(t, filepath.Join(artifactDir, "metadata.json"), artifact)
+	})
+
+	t.Run("invalid_unsupported_storage_short_body_and_security_fail_cleanly", func(t *testing.T) {
+		for _, test := range []struct {
+			name       string
+			request    func(t *testing.T, baseURL string) httpResponse
+			wantStatus int
+			wantCode   string
+		}{
+			{
+				name: "missing_artifact",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return requestMultipartUpload(t, baseURL, []multipartUploadPart{{fieldName: "note", content: []byte("ignored")}}, nil)
+				},
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_artifact_upload",
+			},
+			{
+				name: "duplicate_artifact",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return requestMultipartUpload(t, baseURL, []multipartUploadPart{
+						{fieldName: "artifact", fileName: "one.apk", contentType: "application/vnd.android.package-archive", content: apkLikeZip(t)},
+						{fieldName: "artifact", fileName: "two.apk", contentType: "application/vnd.android.package-archive", content: apkLikeZip(t)},
+					}, nil)
+				},
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_artifact_upload",
+			},
+			{
+				name: "empty_artifact",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return requestArtifactUpload(t, baseURL, "empty.apk", "application/vnd.android.package-archive", nil, nil)
+				},
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_artifact_upload",
+			},
+			{
+				name: "non_apk_filename",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return requestArtifactUpload(t, baseURL, "not-apk.txt", "application/vnd.android.package-archive", apkLikeZip(t), nil)
+				},
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_artifact_upload",
+			},
+			{
+				name: "non_zip_apk",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return requestArtifactUpload(t, baseURL, "not-zip.apk", "application/vnd.android.package-archive", []byte("not a zip"), nil)
+				},
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_artifact_upload",
+			},
+			{
+				name: "oversized_declared_upload",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return rawHTTPRequestWithBody(t, httpRequestSpec{
+						method: "POST",
+						url:    baseURL + "/api/v1/artifacts",
+						headers: map[string]string{
+							"Content-Type":   "multipart/form-data; boundary=oversized",
+							"Content-Length": "269484033",
+						},
+					}, []byte("--oversized\r\nContent-Disposition: form-data; name=\"artifact\"; filename=\"oversized.apk\"\r\nContent-Type: application/vnd.android.package-archive\r\n\r\nPK\x03\x04"))
+				},
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_artifact_upload",
+			},
+			{
+				name: "unsupported_media_type",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return requestBody(t, httpRequestSpec{
+						method: "POST",
+						url:    baseURL + "/api/v1/artifacts",
+						headers: map[string]string{
+							"Content-Type": "application/octet-stream",
+						},
+					}, bytes.NewReader(apkLikeZip(t)))
+				},
+				wantStatus: http.StatusUnsupportedMediaType,
+				wantCode:   "unsupported_artifact_media",
+			},
+			{
+				name: "short_body_cleanup",
+				request: func(t *testing.T, baseURL string) httpResponse {
+					return rawHTTPRequestWithBody(t, httpRequestSpec{
+						method: "POST",
+						url:    baseURL + "/api/v1/artifacts",
+						headers: map[string]string{
+							"Content-Type":   "multipart/form-data; boundary=short-body",
+							"Content-Length": "512",
+						},
+					}, []byte("--short-body\r\nContent-Disposition: form-data; name=\"artifact\"; filename=\"short.apk\"\r\nContent-Type: application/vnd.android.package-archive\r\n\r\nPK\x03\x04"))
+				},
+				wantStatus: http.StatusBadRequest,
+				wantCode:   "invalid_artifact_upload",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				env := isolatedEnv(t)
+				values := envMap(env)
+				dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+				server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+				defer server.cleanup(t)
+				addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+				baseURL := "http://" + addr
+
+				response := test.request(t, baseURL)
+				if response.statusCode != test.wantStatus {
+					t.Fatalf("status = %d, want %d; body = %s", response.statusCode, test.wantStatus, response.body)
+				}
+				assertAPIErrorEnvelope(t, response.body, test.wantCode)
+				assertArtifactsAbsentOrEmpty(t, filepath.Join(dataDir, "artifacts"))
+				assertPathAbsent(t, values["ADB_MARKER"])
+				assertPathAbsent(t, values["BROWSER_MARKER"])
+			})
+		}
+	})
+
+	t.Run("storage_failure_returns_507_without_partial_final_artifact", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		root := t.TempDir()
+		dataDir := filepath.Join(root, "data")
+		if err := os.Mkdir(dataDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(dataDir, 0o700)
+		})
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer server.cleanup(t)
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+
+		response := requestArtifactUpload(t, "http://"+addr, "blocked.apk", "application/vnd.android.package-archive", apkLikeZip(t), nil)
+
+		if response.statusCode != http.StatusInsufficientStorage {
+			t.Fatalf("status = %d, want 507; body = %s", response.statusCode, response.body)
+		}
+		assertAPIErrorEnvelope(t, response.body, "artifact_storage_unavailable")
+		assertArtifactsAbsentOrEmpty(t, filepath.Join(dataDir, "artifacts"))
+		assertPathAbsent(t, values["ADB_MARKER"])
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+
+	t.Run("security_rejection_happens_before_body_storage", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer server.cleanup(t)
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+
+		for _, test := range []struct {
+			name     string
+			headers  map[string]string
+			host     string
+			wantCode string
+		}{
+			{name: "foreign_host", host: "foreign.example", wantCode: "forbidden_host"},
+			{name: "foreign_origin", headers: map[string]string{"Origin": "http://foreign.example"}, wantCode: "forbidden_origin"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestArtifactUploadWithHost(t, baseURL, "blocked.apk", "application/vnd.android.package-archive", apkLikeZip(t), test.host, test.headers)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertArtifactsAbsentOrEmpty(t, filepath.Join(dataDir, "artifacts"))
+			})
+		}
+		assertPathAbsent(t, values["ADB_MARKER"])
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -4379,6 +4601,13 @@ type httpResponse struct {
 	body        []byte
 }
 
+type multipartUploadPart struct {
+	fieldName   string
+	fileName    string
+	contentType string
+	content     []byte
+}
+
 func requestJSON(t *testing.T, spec httpRequestSpec) httpResponse {
 	t.Helper()
 
@@ -4409,7 +4638,106 @@ func requestJSON(t *testing.T, spec httpRequestSpec) httpResponse {
 	return httpResponse{statusCode: response.StatusCode, contentType: response.Header.Get("Content-Type"), body: body}
 }
 
+func requestBody(t *testing.T, spec httpRequestSpec, body io.Reader) httpResponse {
+	t.Helper()
+
+	client := http.Client{Timeout: 5 * time.Second}
+	request, err := http.NewRequest(spec.method, spec.url, body)
+	if err != nil {
+		t.Fatalf("new request %s %s: %v", spec.method, spec.url, err)
+	}
+	if spec.host != "" {
+		request.Host = spec.host
+	}
+	for key, value := range spec.headers {
+		request.Header.Set(key, value)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s: %v", spec.method, spec.url, err)
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read %s response: %v", spec.url, err)
+	}
+	return httpResponse{statusCode: response.StatusCode, contentType: response.Header.Get("Content-Type"), body: responseBody}
+}
+
+func requestArtifactUpload(t *testing.T, baseURL, fileName, contentType string, content []byte, headers map[string]string) httpResponse {
+	t.Helper()
+
+	return requestArtifactUploadWithHost(t, baseURL, fileName, contentType, content, "", headers)
+}
+
+func requestArtifactUploadWithHost(t *testing.T, baseURL, fileName, contentType string, content []byte, host string, headers map[string]string) httpResponse {
+	t.Helper()
+
+	return requestMultipartUploadWithHost(t, baseURL, []multipartUploadPart{{
+		fieldName:   "artifact",
+		fileName:    fileName,
+		contentType: contentType,
+		content:     content,
+	}}, host, headers)
+}
+
+func requestMultipartUpload(t *testing.T, baseURL string, parts []multipartUploadPart, headers map[string]string) httpResponse {
+	t.Helper()
+
+	return requestMultipartUploadWithHost(t, baseURL, parts, "", headers)
+}
+
+func requestMultipartUploadWithHost(t *testing.T, baseURL string, parts []multipartUploadPart, host string, headers map[string]string) httpResponse {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, part := range parts {
+		if part.fileName == "" {
+			field, err := writer.CreateFormField(part.fieldName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := field.Write(part.content); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		partHeaders := textproto.MIMEHeader{}
+		partHeaders.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, part.fieldName, part.fileName))
+		if part.contentType != "" {
+			partHeaders.Set("Content-Type", part.contentType)
+		}
+		field, err := writer.CreatePart(partHeaders)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := field.Write(part.content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	requestHeaders := map[string]string{"Content-Type": writer.FormDataContentType()}
+	for key, value := range headers {
+		requestHeaders[key] = value
+	}
+	return requestBody(t, httpRequestSpec{
+		method:  "POST",
+		url:     baseURL + "/api/v1/artifacts",
+		host:    host,
+		headers: requestHeaders,
+	}, &body)
+}
+
 func rawHTTPRequest(t *testing.T, spec httpRequestSpec) httpResponse {
+	t.Helper()
+
+	return rawHTTPRequestWithBody(t, spec, nil)
+}
+
+func rawHTTPRequestWithBody(t *testing.T, spec httpRequestSpec, body []byte) httpResponse {
 	t.Helper()
 
 	address := spec.rawHTTPHost
@@ -4434,25 +4762,39 @@ func rawHTTPRequest(t *testing.T, spec httpRequestSpec) httpResponse {
 	if host == "" {
 		host = address
 	}
+	requestURI := spec.requestURI
+	if requestURI == "" {
+		parsed, err := url.Parse(spec.url)
+		if err != nil {
+			t.Fatalf("parse raw HTTP URL %s: %v", spec.url, err)
+		}
+		requestURI = parsed.RequestURI()
+	}
 	var request bytes.Buffer
-	fmt.Fprintf(&request, "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n", spec.method, spec.requestURI, host)
+	fmt.Fprintf(&request, "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n", spec.method, requestURI, host)
 	for key, value := range spec.headers {
 		fmt.Fprintf(&request, "%s: %s\r\n", key, value)
 	}
 	request.WriteString("\r\n")
+	request.Write(body)
 	if _, err := conn.Write(request.Bytes()); err != nil {
 		t.Fatalf("write raw HTTP request: %v", err)
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		if err := tcpConn.CloseWrite(); err != nil {
+			t.Fatalf("close raw HTTP write side: %v", err)
+		}
 	}
 	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		t.Fatalf("read raw HTTP response: %v", err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatalf("read raw HTTP body: %v", err)
 	}
-	return httpResponse{statusCode: response.StatusCode, contentType: response.Header.Get("Content-Type"), body: body}
+	return httpResponse{statusCode: response.StatusCode, contentType: response.Header.Get("Content-Type"), body: responseBody}
 }
 
 func isolatedEnv(t *testing.T) []string {
@@ -4813,6 +5155,118 @@ func assertAPIErrorEnvelope(t *testing.T, body []byte, code string) {
 	})
 }
 
+type artifactUploadAssertion struct {
+	ID             string `json:"id"`
+	OriginalName   string `json:"originalName"`
+	SizeBytes      int    `json:"sizeBytes"`
+	SHA256         string `json:"sha256"`
+	ContentType    string `json:"contentType"`
+	CreatedAt      string `json:"createdAt"`
+	AnalysisStatus string `json:"analysisStatus"`
+}
+
+func assertArtifactUploadJSON(t *testing.T, body []byte, wantOriginalName string, wantSize int, wantSHA, wantContentType string) artifactUploadAssertion {
+	t.Helper()
+
+	var got struct {
+		Artifact artifactUploadAssertion `json:"artifact"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal artifact upload JSON: %v\nbody: %s", err, body)
+	}
+	artifact := got.Artifact
+	if artifact.ID == "" || strings.ContainsAny(artifact.ID, `/\`) || strings.Contains(artifact.ID, "..") {
+		t.Fatalf("artifact id = %q, want opaque path-safe id; body = %s", artifact.ID, body)
+	}
+	if artifact.OriginalName != wantOriginalName {
+		t.Fatalf("originalName = %q, want %q; body = %s", artifact.OriginalName, wantOriginalName, body)
+	}
+	if artifact.SizeBytes != wantSize {
+		t.Fatalf("sizeBytes = %d, want %d; body = %s", artifact.SizeBytes, wantSize, body)
+	}
+	if artifact.SHA256 != wantSHA {
+		t.Fatalf("sha256 = %q, want %q; body = %s", artifact.SHA256, wantSHA, body)
+	}
+	if artifact.ContentType != wantContentType {
+		t.Fatalf("contentType = %q, want %q; body = %s", artifact.ContentType, wantContentType, body)
+	}
+	if artifact.AnalysisStatus != "pending" {
+		t.Fatalf("analysisStatus = %q, want pending; body = %s", artifact.AnalysisStatus, body)
+	}
+	if _, err := time.Parse(time.RFC3339, artifact.CreatedAt); err != nil {
+		t.Fatalf("createdAt = %q, want RFC3339 timestamp: %v", artifact.CreatedAt, err)
+	}
+	for _, forbidden := range []string{"HOME=", "ADB_DASHBOARD", "secret", "original.apk", "metadata.json"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("artifact response contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+	return artifact
+}
+
+func assertArtifactMetadataFile(t *testing.T, path string, want artifactUploadAssertion) {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read metadata %s: %v", path, err)
+	}
+	got := assertArtifactUploadJSON(t, content, want.OriginalName, want.SizeBytes, want.SHA256, want.ContentType)
+	if got.ID != want.ID {
+		t.Fatalf("metadata id = %q, want %q", got.ID, want.ID)
+	}
+	if got.CreatedAt != want.CreatedAt {
+		t.Fatalf("metadata createdAt = %q, want %q", got.CreatedAt, want.CreatedAt)
+	}
+}
+
+func assertFileBytes(t *testing.T, path string, want []byte) {
+	t.Helper()
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s bytes mismatch: got %d bytes, want %d bytes", path, len(got), len(want))
+	}
+}
+
+func assertArtifactsAbsentOrEmpty(t *testing.T, path string) {
+	t.Helper()
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return
+	} else if err != nil {
+		t.Fatalf("stat artifacts dir %s: %v", path, err)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatalf("read artifacts dir %s: %v", path, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("artifacts dir %s contains entries after failed upload: %v", path, entries)
+	}
+}
+
+func apkLikeZip(t *testing.T) []byte {
+	t.Helper()
+
+	var body bytes.Buffer
+	zipWriter := zip.NewWriter(&body)
+	file, err := zipWriter.Create("AndroidManifest.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("<manifest package=\"com.example.upload\" />")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
+}
+
 func apiErrorMessage(code string) string {
 	switch code {
 	case "adb_unavailable":
@@ -4837,6 +5291,12 @@ func apiErrorMessage(code string) string {
 		return "Package not found"
 	case "adb_package_detail_failed":
 		return "ADB package detail failed"
+	case "invalid_artifact_upload":
+		return "Invalid artifact upload"
+	case "unsupported_artifact_media":
+		return "Unsupported artifact media type"
+	case "artifact_storage_unavailable":
+		return "Artifact storage is unavailable"
 	default:
 		return ""
 	}
