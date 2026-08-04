@@ -6,8 +6,8 @@
 - Roadmap version: 1.3.0
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.3.0
-- Current milestone: M4
-- Next eligible slice: M4-S5
+- Current milestone: M5
+- Next eligible slice: M5-S1
 - Last reviewed: 2026-08-02
 
 This roadmap selects implementation order for the accepted local bootstrap,
@@ -1034,7 +1034,7 @@ Every implementation slice must:
 
 ### Slice M4-S5: Browser Package Detail View
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Make package detail usable from the browser for packages returned by
   the inventory view.
@@ -1083,7 +1083,7 @@ Every implementation slice must:
   production backend responses, unsupported controls are absent, applicable
   broad checks pass or have recorded blockers, and review passes.
 - Completion evidence reference: `.codex/plans/current.md` and
-  `.codex/cycles/history.md`.
+  `.codex/cycles/history.md` after `CYCLE-20260802-M4-S5` closure.
 
 ## Milestone M5: Local APK Artifact Intake And Analysis
 

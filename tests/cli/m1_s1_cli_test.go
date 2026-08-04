@@ -3244,7 +3244,7 @@ exit 17
 			t.Fatalf("root status = %d, body = %s", statusCode, body)
 		}
 		html := string(body)
-		assertM4S3BrowserShellOmitsUnsupportedPackageControls(t, html)
+		assertM4S5BrowserShellOmitsUnsupportedPackageControls(t, html)
 
 		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, html), baseURL, []frontendAction{
 			{id: "device-packages-first", afterMS: 350},
@@ -3324,6 +3324,244 @@ printf 'package:/system/app/Alpha/Alpha.apk=com.alpha uid:1000 versionCode:42\n'
 		for _, forbidden := range []string{"secret package failure", values["HOME"], "com.alpha"} {
 			if strings.Contains(rendered, forbidden) {
 				t.Fatalf("rendered package failure contains stale or forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertNoRetainedOutputPaths(t, env)
+	})
+}
+
+func TestM4S5BrowserPackageDetailView(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("opens_detail_from_package_row", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		adbPath := writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ] && [ "$#" -eq 1 ]; then
+  printf 'Android Debug Bridge version browser-package-detail\n'
+  exit 0
+fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ] && [ "$#" -eq 2 ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device product:sdk_phone model:Pixel_8 device:emu64 transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "pm" ] && [ "$5" = "list" ] && [ "$6" = "packages" ]; then
+  echo "secret package inventory stderr $HOME" >&2
+  printf 'package:/data/app/com.zeta/base.apk=com.zeta uid:10123 versionCode:7\n'
+  printf 'package:/system/app/Alpha/Alpha.apk=com.example.alpha uid:1000 versionCode:42\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "dumpsys" ] && [ "$5" = "package" ] && [ "$6" = "com.example.alpha" ] && [ "$#" -eq 6 ]; then
+  echo "secret package detail stderr $HOME" >&2
+  printf 'Package [com.example.alpha] (abc123):\n'
+  printf '  versionName=1.2.3\n'
+  printf '  versionCode=42 minSdk=23 targetSdk=35\n'
+  printf '  installerPackageName=com.android.vending\n'
+  printf '  firstInstallTime=2026-08-01 10:11:12\n'
+  printf '  lastUpdateTime=2026-08-02 09:08:07\n'
+  printf '  requested permissions:\n'
+  printf '    android.permission.INTERNET\n'
+  printf '    com.example.alpha.permission.SYNC\n'
+  printf '  install permissions:\n'
+  printf '    android.permission.INTERNET: granted=true\n'
+  i=0
+  while [ "$i" -lt 70 ]; do
+    printf '  summary line %03d for com.example.alpha\n' "$i"
+    i=$((i + 1))
+  done
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		statusCode, _, body := httpGet(t, baseURL+"/")
+		if statusCode != http.StatusOK {
+			t.Fatalf("root status = %d, body = %s", statusCode, body)
+		}
+		html := string(body)
+		assertM4S5BrowserShellOmitsUnsupportedPackageControls(t, html)
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, html), baseURL, []frontendAction{
+			{id: "device-packages-first", afterMS: 350},
+			{id: "package-detail-com.example.alpha", afterMS: 1000},
+		})
+		for _, want := range []string{
+			"device-packages=packages: all count=2",
+			"device-package-detail=package detail: emulator-5554 com.example.alpha",
+			"package: com.example.alpha",
+			"versionName: 1.2.3",
+			"versionCode: 42",
+			"installer: com.android.vending",
+			"firstInstallTime: 2026-08-01 10:11:12",
+			"lastUpdateTime: 2026-08-02 09:08:07",
+			"permission: android.permission.INTERNET",
+			"permission: com.example.alpha.permission.SYNC",
+			"summary: Package [com.example.alpha] (abc123):",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("rendered package detail missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{
+			adbPath,
+			values["HOME"],
+			"secret package inventory stderr",
+			"secret package detail stderr",
+			"Android Debug Bridge version browser-package-detail",
+			"summary line 060 for com.example.alpha",
+		} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered package detail contains forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertFileContains(t, values["ADB_MARKER"], strings.Join([]string{
+			"version",
+			"version",
+			"devices -l",
+			"version",
+			"devices -l",
+			"-s emulator-5554 shell pm list packages -f -U --show-versioncode",
+			"version",
+			"devices -l",
+			"-s emulator-5554 shell dumpsys package com.example.alpha",
+			"",
+		}, "\n"))
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("shows_loading_while_backend_request_is_pending", func(t *testing.T) {
+		env := isolatedEnv(t)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-package-detail-state\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "pm" ]; then
+  printf 'package:/system/app/Alpha/Alpha.apk=com.example.alpha uid:1000 versionCode:42\n'
+  exit 0
+fi
+sleep 2
+printf 'Package [com.example.alpha] (abc123):\n'
+printf '  versionName=1.2.3\n'
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-packages-first", afterMS: 350},
+			{id: "package-detail-com.example.alpha", afterMS: 1000},
+		})
+		if !strings.Contains(rendered, "device-package-detail=package detail: loading") {
+			t.Fatalf("rendered shell missing package detail loading state\nrendered:\n%s", rendered)
+		}
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("shows_failure_from_backend", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-package-detail-failure\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "pm" ]; then
+  printf 'package:/system/app/Alpha/Alpha.apk=com.example.alpha uid:1000 versionCode:42\n'
+  exit 0
+fi
+echo "secret detail failure $HOME" >&2
+exit 42
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-packages-first", afterMS: 350},
+			{id: "package-detail-com.example.alpha", afterMS: 1000},
+		})
+		if !strings.Contains(rendered, "device-package-detail=package detail: unavailable") {
+			t.Fatalf("rendered shell missing package detail failure state\nrendered:\n%s", rendered)
+		}
+		for _, forbidden := range []string{"secret detail failure", values["HOME"], "versionName: 1.2.3"} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered package detail failure contains stale or forbidden text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertNoRetainedOutputPaths(t, env)
+	})
+
+	t.Run("does_not_render_stale_detail_after_scope_change", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		writeFakeADB(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$ADB_MARKER"
+if [ "$1" = "version" ]; then
+  printf 'Android Debug Bridge version browser-package-detail-stale\n'
+  exit 0
+fi
+if [ "$1" = "devices" ]; then
+  printf 'List of devices attached\n'
+  printf 'emulator-5554 device transport_id:1\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "pm" ]; then
+  printf 'package:/system/app/Alpha/Alpha.apk=com.example.alpha uid:1000 versionCode:42\n'
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$2" = "emulator-5554" ] && [ "$3" = "shell" ] && [ "$4" = "dumpsys" ] && [ "$5" = "package" ] && [ "$6" = "com.example.alpha" ]; then
+  sleep 2
+  printf 'Package [com.example.alpha] (abc123):\n'
+  printf '  versionName=stale-detail\n'
+  exit 0
+fi
+echo "unexpected adb arguments $HOME" >&2
+exit 17
+`)
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--no-open")
+		defer server.cleanup(t)
+
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
+			{id: "device-packages-first", afterMS: 350},
+			{id: "package-detail-com.example.alpha", afterMS: 1000},
+			{id: "package-scope-system", afterMS: 1100},
+			{touch: filepath.Join(values["TMPDIR"], "observe-stale-detail"), afterMS: 3000},
+		})
+		if !strings.Contains(rendered, "device-package-detail=package detail: unavailable") {
+			t.Fatalf("rendered shell did not keep package detail cleared after scope change\nrendered:\n%s", rendered)
+		}
+		for _, forbidden := range []string{
+			"versionName: stale-detail",
+			"package detail: emulator-5554 com.example.alpha",
+		} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("rendered shell contains stale package detail %q:\n%s", forbidden, rendered)
 			}
 		}
 		assertNoRetainedOutputPaths(t, env)
@@ -3782,10 +4020,14 @@ func runFrontendScriptWithActions(t *testing.T, script, baseURL string, actions 
 	}
 
 	actionLines := make([]string, 0, len(actions))
+	logDelay := 1000
 	for index, action := range actions {
 		delay := action.afterMS
 		if delay == 0 {
 			delay = 200 + index*200
+		}
+		if delay+1000 > logDelay {
+			logDelay = delay + 1000
 		}
 		switch {
 		case action.id != "":
@@ -3799,26 +4041,56 @@ func runFrontendScriptWithActions(t *testing.T, script, baseURL string, actions 
 const fs = require("fs");
 const baseURL = %q;
 const elements = {};
+function makeElement(initialID = "") {
+  const target = {
+    _id: "",
+    textContent: "",
+    src: "",
+    alt: "",
+    children: [],
+    listeners: {},
+    appendChild: (child) => {
+      target.children.push(child);
+      target.textContent = target.children.map((item) => item.textContent || "").join("\n");
+      return child;
+    },
+    replaceChildren: (...children) => {
+      target.children = children;
+      target.textContent = target.children.map((item) => item.textContent || "").join("\n");
+    },
+    addEventListener: (event, callback) => {
+      target.listeners[event] = callback;
+    },
+    click: () => {
+      if (target.listeners.click) {
+        return Promise.resolve(target.listeners.click({ preventDefault: () => {} }));
+      }
+    },
+  };
+  Object.defineProperty(target, "id", {
+    get: () => target._id,
+    set: (value) => {
+      target._id = String(value);
+      if (target._id) {
+        elements[target._id] = target;
+      }
+    },
+  });
+  if (initialID) {
+    target.id = initialID;
+  }
+  return target;
+}
 function element(id) {
   if (!elements[id]) {
-    elements[id] = {
-      textContent: "",
-      listeners: {},
-      addEventListener: (event, callback) => {
-        elements[id].listeners[event] = callback;
-      },
-      click: () => {
-        if (elements[id].listeners.click) {
-          return Promise.resolve(elements[id].listeners.click({ preventDefault: () => {} }));
-        }
-      },
-    };
+    elements[id] = makeElement(id);
   }
   return elements[id];
 }
 global.window = {};
 global.document = {
   getElementById: element,
+  createElement: () => makeElement(),
   addEventListener: (event, callback) => {
     if (event === "DOMContentLoaded") {
       Promise.resolve().then(callback);
@@ -3848,8 +4120,8 @@ setTimeout(() => {
       console.log(key + ".alt=" + elements[key].alt);
     }
   }
-}, 1000);
-`, baseURL, script, strings.Join(actionLines, "\n"))
+}, %d);
+`, baseURL, script, strings.Join(actionLines, "\n"), logDelay)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -3878,7 +4150,6 @@ func assertBrowserShellOmitsUnsupportedADBControls(t *testing.T, text string) {
 		"transfers",
 		"artifacts",
 		"reboot",
-		"install",
 		"uninstall",
 		"shell",
 	} {
@@ -3900,7 +4171,6 @@ func assertM3S1BrowserShellOmitsUnsupportedControls(t *testing.T, text string) {
 		"transfers",
 		"artifacts",
 		"reboot",
-		"install",
 		"uninstall",
 		"shell",
 	} {
@@ -3922,7 +4192,31 @@ func assertM4S3BrowserShellOmitsUnsupportedPackageControls(t *testing.T, text st
 		"transfers",
 		"artifacts",
 		"reboot",
-		"install",
+		"uninstall",
+		"force-stop",
+		"disable",
+		"enable",
+		"pull",
+		"shell",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func assertM4S5BrowserShellOmitsUnsupportedPackageControls(t *testing.T, text string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"csrfToken",
+		"webSocketToken",
+		"<form",
+		"href=",
+		"raw command",
+		"transfers",
+		"artifacts",
+		"reboot",
 		"uninstall",
 		"force-stop",
 		"disable",

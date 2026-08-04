@@ -614,9 +614,8 @@ Expected result:
 - Future areas such as watcher, jobs, sessions, storage, and host tools show
   `NIY`.
 - No bootstrap token values are visible.
-- No unsupported controls or text for shell, install, uninstall, transfer,
-  reboot, jobs, sessions, artifacts, package detail, screen recording, or
-  settings appear.
+- No unsupported controls for shell, install, uninstall, transfer, reboot,
+  jobs, sessions, artifacts, screen recording, or settings appear.
 
 Click `refresh`.
 
@@ -675,6 +674,7 @@ Expected result:
 - No install, uninstall, clear, stop, launch, pull, shell, file-transfer, or
   mutation control appears.
 - No package output is retained in repository data or temp directories.
+- Package rows can be opened for read-only package detail.
 
 Click `all`, `third-party`, and `system`.
 
@@ -683,7 +683,24 @@ Expected result:
 - The package inventory area updates to the selected scope.
 - The count and rows are derived from the backend package inventory response for
   that scope.
-- Stale package rows are cleared during loading and after failure.
+- Stale package rows and package detail are cleared during loading and after
+  failure.
+
+Click a package row.
+
+Expected result:
+
+- Package detail area first shows a loading state.
+- It then shows `package detail: SERIAL PACKAGE_NAME`.
+- Parsed fields such as version name, version code, installer, install times,
+  update times, and requested permissions appear only when reported by ADB.
+- Bounded summary lines from the backend package detail response are visible.
+- If ADB becomes unavailable, the device is no longer ready, the package is not
+  found, or package detail fails, the package detail area shows
+  `package detail: unavailable`.
+- No install, uninstall, clear, stop, launch, pull, shell, file-transfer, or
+  mutation control appears.
+- No package detail output is retained in repository data or temp directories.
 
 ## Non-Ready Device Observation
 
@@ -719,10 +736,9 @@ return:
 
 ## Current Unavailable Areas
 
-Do not manually test browser package detail or local APK artifact workflows as
-current behavior. The accepted roadmap lists those as future slices beginning
-at `M4-S5`; the current browser does not expose package detail controls, and
-the production server does not expose `/api/v1/artifacts` routes.
+Do not manually test local APK artifact workflows as current behavior. The
+accepted roadmap lists those as future slices beginning at `M5-S1`; the
+production server does not expose `/api/v1/artifacts` routes.
 
 ## Shutdown
 

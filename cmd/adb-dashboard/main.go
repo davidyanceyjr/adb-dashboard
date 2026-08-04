@@ -1900,7 +1900,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>bind</dt><dd id="server-bind">bind: unavailable</dd>
       <dt>read-only</dt><dd id="server-read-only">read-only: unavailable</dd>
       <dt>adb</dt><dd id="adb-status">adb: unavailable</dd>
-      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div><div class="controls"><button type="button" id="devices-refresh">refresh</button><button type="button" id="device-detail-first">details</button><button type="button" id="device-logcat-first">logcat</button><button type="button" id="device-screenshot-first">screenshot</button><button type="button" id="device-packages-first">packages</button></div><div id="device-detail" class="device-detail">detail: unavailable</div><div id="device-logcat" class="device-detail">logcat: unavailable</div><div id="device-screenshot" class="device-detail">screenshot: unavailable</div><img id="device-screenshot-image" class="device-screenshot" alt=""><div class="controls"><button type="button" id="package-scope-all">all</button><button type="button" id="package-scope-third-party">third-party</button><button type="button" id="package-scope-system">system</button></div><div id="device-packages" class="device-detail">packages: unavailable</div><div id="device-packages-list" class="device-list"></div></dd>
+      <dt>devices</dt><dd><span id="device-count">devices: unavailable</span><div id="devices-list" class="device-list"></div><div class="controls"><button type="button" id="devices-refresh">refresh</button><button type="button" id="device-detail-first">details</button><button type="button" id="device-logcat-first">logcat</button><button type="button" id="device-screenshot-first">screenshot</button><button type="button" id="device-packages-first">packages</button></div><div id="device-detail" class="device-detail">detail: unavailable</div><div id="device-logcat" class="device-detail">logcat: unavailable</div><div id="device-screenshot" class="device-detail">screenshot: unavailable</div><img id="device-screenshot-image" class="device-screenshot" alt=""><div class="controls"><button type="button" id="package-scope-all">all</button><button type="button" id="package-scope-third-party">third-party</button><button type="button" id="package-scope-system">system</button></div><div id="device-packages" class="device-detail">packages: unavailable</div><div id="device-packages-list" class="device-list"></div><div id="device-package-detail" class="device-detail">package detail: unavailable</div></dd>
       <dt>watcher</dt><dd id="watcher-status">watcher: unavailable</dd>
       <dt>jobs</dt><dd id="jobs-status">jobs: unavailable</dd>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
@@ -1927,8 +1927,63 @@ const dashboardShellHTML = `<!doctype html>
   };
 
   let latestDevices = [];
+  let latestPackages = [];
   let latestPackageScope = "all";
   let refreshSequence = 0;
+  let packageDetailSequence = 0;
+
+  const packageDetailButtonID = (packageName) => {
+    return "package-detail-" + String(packageName || "");
+  };
+
+  const clearPackageDetail = () => {
+    packageDetailSequence++;
+    setText("device-package-detail", "package detail: unavailable");
+  };
+
+  const clearPackageRows = () => {
+    latestPackages = [];
+    const target = document.getElementById("device-packages-list");
+    if (target && target.replaceChildren) {
+      target.replaceChildren();
+      return;
+    }
+    setText("device-packages-list", "");
+  };
+
+  const renderPackageRows = (items) => {
+    latestPackages = items;
+    const target = document.getElementById("device-packages-list");
+    if (!target || !target.replaceChildren || !document.createElement) {
+      setText("device-packages-list", items.map((item) => packageRowText(item)).join("\n"));
+      return;
+    }
+    target.replaceChildren();
+    for (const item of items) {
+      const row = document.createElement("div");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.id = packageDetailButtonID(item.name);
+      button.textContent = packageRowText(item);
+      button.addEventListener("click", () => loadPackageDetail(item.name));
+      row.appendChild(button);
+      target.appendChild(row);
+    }
+  };
+
+  const packageRowText = (item) => {
+    const parts = [String(item.name || "")];
+    if (item.versionCode) {
+      parts.push("versionCode:" + String(item.versionCode));
+    }
+    if (item.userId) {
+      parts.push("uid:" + String(item.userId));
+    }
+    if (item.apkPath) {
+      parts.push(String(item.apkPath));
+    }
+    return parts.join(" ");
+  };
 
   const unavailable = () => {
     setText("server-status", "server: unavailable");
@@ -1942,7 +1997,8 @@ const dashboardShellHTML = `<!doctype html>
     setText("device-screenshot", "screenshot: unavailable");
     setScreenshotImage("", "");
     setText("device-packages", "packages: unavailable");
-    setText("device-packages-list", "");
+    clearPackageRows();
+    clearPackageDetail();
     setText("watcher-status", "watcher: unavailable");
     setText("jobs-status", "jobs: unavailable");
     setText("sessions-status", "sessions: unavailable");
@@ -1959,7 +2015,8 @@ const dashboardShellHTML = `<!doctype html>
     setText("device-screenshot", "screenshot: unavailable");
     setScreenshotImage("", "");
     setText("device-packages", "packages: unavailable");
-    setText("device-packages-list", "");
+    clearPackageRows();
+    clearPackageDetail();
   };
 
   const loadDevices = async () => {
@@ -1984,7 +2041,8 @@ const dashboardShellHTML = `<!doctype html>
       setText("device-screenshot", "screenshot: unavailable");
       setScreenshotImage("", "");
       setText("device-packages", "packages: unavailable");
-      setText("device-packages-list", "");
+      clearPackageRows();
+      clearPackageDetail();
     } catch (_) {
       if (sequence !== refreshSequence) {
         return;
@@ -2087,11 +2145,13 @@ const dashboardShellHTML = `<!doctype html>
     latestPackageScope = scope || latestPackageScope || "all";
     if (!device || !device.serial) {
       setText("device-packages", "packages: unavailable");
-      setText("device-packages-list", "");
+      clearPackageRows();
+      clearPackageDetail();
       return;
     }
     setText("device-packages", "packages: loading");
-    setText("device-packages-list", "");
+    clearPackageRows();
+    clearPackageDetail();
     try {
       const packagesResponse = await fetch("/api/v1/devices/" + encodeURIComponent(device.serial) + "/packages?scope=" + encodeURIComponent(latestPackageScope), { credentials: "same-origin" });
       if (!packagesResponse.ok) {
@@ -2106,22 +2166,71 @@ const dashboardShellHTML = `<!doctype html>
         setText("device-packages-list", "empty");
         return;
       }
-      setText("device-packages-list", items.map((item) => {
-        const parts = [String(item.name || "")];
-        if (item.versionCode) {
-          parts.push("versionCode:" + String(item.versionCode));
-        }
-        if (item.userId) {
-          parts.push("uid:" + String(item.userId));
-        }
-        if (item.apkPath) {
-          parts.push(String(item.apkPath));
-        }
-        return parts.join(" ");
-      }).join("\n"));
+      renderPackageRows(items);
     } catch (_) {
       setText("device-packages", "packages: unavailable");
-      setText("device-packages-list", "");
+      clearPackageRows();
+      clearPackageDetail();
+    }
+  };
+
+  const loadPackageDetail = async (packageName) => {
+    const device = latestDevices[0];
+    const selectedName = String(packageName || "");
+    const selectedSerial = String((device && device.serial) || "");
+    if (!selectedSerial || !selectedName) {
+      clearPackageDetail();
+      return;
+    }
+    const sequence = ++packageDetailSequence;
+    setText("device-package-detail", "package detail: loading");
+    try {
+      const detailResponse = await fetch("/api/v1/devices/" + encodeURIComponent(selectedSerial) + "/packages/" + encodeURIComponent(selectedName), { credentials: "same-origin" });
+      if (!detailResponse.ok) {
+        throw new Error("package detail unavailable");
+      }
+      const payload = await detailResponse.json();
+      const currentDevice = latestDevices[0];
+      const selectedPackageVisible = latestPackages.some((item) => String(item.name || "") === selectedName);
+      if (sequence !== packageDetailSequence || !currentDevice || String(currentDevice.serial || "") !== selectedSerial || !selectedPackageVisible) {
+        return;
+      }
+      const current = payload.device || {};
+      const pkg = payload.package || {};
+      const name = String(pkg.name || selectedName);
+      const serial = String(current.serial || selectedSerial);
+      const lines = [
+        "package detail: " + serial + " " + name,
+        "package: " + name,
+      ];
+      if (pkg.versionName) {
+        lines.push("versionName: " + String(pkg.versionName));
+      }
+      if (pkg.versionCode) {
+        lines.push("versionCode: " + String(pkg.versionCode));
+      }
+      if (pkg.installer) {
+        lines.push("installer: " + String(pkg.installer));
+      }
+      if (pkg.firstInstallTime) {
+        lines.push("firstInstallTime: " + String(pkg.firstInstallTime));
+      }
+      if (pkg.lastUpdateTime) {
+        lines.push("lastUpdateTime: " + String(pkg.lastUpdateTime));
+      }
+      const permissions = Array.isArray(pkg.requestedPermissions) ? pkg.requestedPermissions : [];
+      for (const permission of permissions) {
+        lines.push("permission: " + String(permission));
+      }
+      const summaryLines = Array.isArray(pkg.summaryLines) ? pkg.summaryLines : [];
+      for (const line of summaryLines) {
+        lines.push("summary: " + String(line));
+      }
+      setText("device-package-detail", lines.join("\n"));
+    } catch (_) {
+      if (sequence === packageDetailSequence) {
+        clearPackageDetail();
+      }
     }
   };
 
