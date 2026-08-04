@@ -4,8 +4,8 @@
 - Last cycle ID: CYCLE-20260803-M5-S1
 - Last mode: feature
 - Last roadmap slice: M5-S1: Artifact Upload API
-- Last result: verified
-- Last final phase: ready
+- Last result: committed
+- Last final phase: committed
 - Next eligible slice: M5-S2
 - Blocker: none
 
@@ -40,5 +40,5 @@ Changed:
 - `docs/MANUAL_TESTING.md`
 - `docs/roadmap.md`
 - `tests/cli/m1_s1_cli_test.go`
-Next: commit if explicitly requested; otherwise start next eligible slice `M5-S2` with narrow verification by default.
+Next: start next eligible slice `M5-S2` with narrow verification by default.
 Blocker: none
