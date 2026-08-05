@@ -1245,9 +1245,9 @@ Every implementation slice must:
   `.codex/plans/current.md` before implementation begins.
 - Real-path exercise: Start the server with a stored artifact and fake `aapt`,
   request analysis, inspect JSON and persisted metadata, request artifact
-  detail, repeat unknown artifact, missing tool, failure, timeout, malformed
-  output, oversized output, and rejected Host/Origin cases, and inspect
-  fake-tool logs.
+  detail, repeat unknown artifact, missing tool, nonzero exit, 5-second
+  timeout, output without `package: name=...`, stdout larger than 1 MiB, and
+  rejected Host/Origin cases, and inspect fake-tool logs.
 - Broad verification: Run applicable repository test, formatting, lint,
   type-check, build, browser-script, API, and filesystem checks discovered from
   repository entry points.
@@ -1256,19 +1256,21 @@ Every implementation slice must:
 - Dependencies: `M5-S2`.
 - In scope:
   - `POST /api/v1/artifacts/{artifactId}/analyze`.
-  - Bounded `aapt dump badging STORED_APK_PATH` execution.
-  - Parsing package metadata fields named by `CAP-019`.
-  - Persisted ready analysis.
+  - Bounded `aapt dump badging STORED_APK_PATH` execution with a 5-second
+    timeout and 1 MiB stdout limit.
+  - Parsing package metadata fields named by `CAP-019`, including required
+    `analysis.tool`, `analysis.packageName`, and `analysis.analyzedAt`.
+  - Persisted ready analysis in artifact `metadata.json`.
   - Detail response includes the latest ready analysis after successful
     analysis.
-  - Unknown artifact, missing/failing/timed-out/malformed/oversized tool output,
-    and security rejection.
+  - Unknown artifact, missing tool, nonzero exit, timed-out tool, output without
+    `package: name=...`, oversized stdout, and security rejection.
 - Out of scope:
   - Browser artifact analysis UI, install, signing verification, malware
     analysis, network lookups, reports, jobs, and artifact deletion.
 - Risks:
   - Leaking stored filesystem paths or command stderr.
-  - Treating malformed tool output as ready analysis.
+  - Treating output without `package: name=...` as ready analysis.
   - Replacing prior good analysis with failed output.
 - Stop conditions:
   - Analysis cannot be exercised through production routing with isolated
@@ -1278,10 +1280,11 @@ Every implementation slice must:
 - Documentation synchronization: Update user-facing API/manual documentation if
   it exists; otherwise record `DOCS NOT REQUIRED` with reason.
 - Exit gate: `AC-019-001` through `AC-019-003` and the ready-analysis portion
-  of `AC-020-002` have green HTTP/filesystem evidence, only the allowed
-  host-tool command is invoked, no false ready analysis is stored, rejected
-  security requests invoke no host tool, applicable broad checks pass or have
-  recorded blockers, and review passes.
+  of `AC-020-002` have green HTTP/filesystem evidence, analysis responses and
+  detail responses return the documented `artifact` and `analysis` fields, only
+  the allowed host-tool command is invoked, no false ready analysis is stored,
+  rejected security requests invoke no host tool, applicable broad checks pass
+  or have recorded blockers, and review passes.
 - Completion evidence reference: `.codex/plans/current.md` and
   `.codex/cycles/history.md`.
 

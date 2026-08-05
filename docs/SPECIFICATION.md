@@ -2098,18 +2098,25 @@ clients on the same origin.
 Requests use `POST /api/v1/artifacts/{artifactId}/analyze`. The host analysis
 tool is `aapt` resolved from `PATH`.
 
-**Successful behavior:** The backend executes bounded local analysis with
-`aapt dump badging STORED_APK_PATH`, parses package name, version name, version
-code, SDK values, application label, and launchable activity when reported, and
-stores the latest analysis result for the artifact.
+**Successful behavior:** The backend executes bounded local analysis with the
+exact argument vector `aapt dump badging STORED_APK_PATH`, reads stdout up to
+1 MiB, parses the required `package: name=...` value and optional version name,
+version code, SDK values, application label, launchable activity, and warning
+lines when reported, and stores the latest analysis result for the artifact.
 
-**Output, response, event, or visible state:** HTTP `200` JSON with
-`artifact.id`, `artifact.analysisStatus` equal to `ready`, `analysis.tool`
-equal to `aapt`, optional parsed metadata fields, bounded warning lines when
-applicable, and `analysis.analyzedAt`.
+**Output, response, event, or visible state:** HTTP `200` JSON returns
+`artifact` and `analysis`. `artifact.id` matches the selected artifact and
+`artifact.analysisStatus` equals `ready`. `analysis` contains required
+`tool: "aapt"`, required `packageName`, optional `versionName`, optional
+`versionCode`, optional `minSdkVersion`, optional `targetSdkVersion`, optional
+`applicationLabel`, optional `launchableActivity`, optional `warnings`, and
+required `analyzedAt`. Version and SDK values are strings. `warnings`, when
+present, contains at most 20 stdout warning lines, each trimmed to at most 500
+bytes without splitting a UTF-8 sequence.
 
 **Required side effects:** Execute only the local host tool command named
-above and write the latest analysis metadata under the artifact directory.
+above and atomically replace `metadata.json` under the artifact directory with
+the existing artifact metadata plus latest ready `analysis`.
 
 **Forbidden side effects:** Analysis must not execute ADB, install or mutate an
 APK, send network requests, write outside the artifact directory, expose stored
@@ -2119,15 +2126,18 @@ delete the artifact file.
 **Errors and negative behavior:**
 
 - Unknown artifact ID returns HTTP `404` with code `artifact_not_found`.
-- Missing or failing `aapt`, timeout, malformed output, or oversized output
-  returns HTTP `502` with code `artifact_analysis_failed`.
+- Missing `aapt`, nonzero exit, timeout after 5 seconds, stdout larger than
+  1 MiB, or output without a parseable `package: name=...` value returns HTTP
+  `502` with code `artifact_analysis_failed`.
 - Rejected Host or Origin requests return the standard security envelope before
   host-tool execution.
 
 **Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Security
-checks run before artifact lookup and host-tool execution. Analysis has a
-bounded timeout. A failed analysis leaves the prior successful analysis, if any,
-unchanged and records no new ready result.
+checks run before artifact lookup and host-tool execution. Analysis times out
+after 5 seconds. A failed analysis leaves the prior successful analysis, if any,
+unchanged and records no new ready result. If no prior successful analysis
+exists, failed analysis leaves `artifact.analysisStatus` equal to `pending` and
+stores no `analysis`.
 
 **Security, authorization, privacy, and data safety:** Analysis remains local.
 Responses do not expose absolute stored paths or host environment details.
@@ -2137,14 +2147,16 @@ tool name, and error codes are stable for this specification version.
 
 #### Acceptance Criteria
 
-- `AC-019-001`: Given a stored artifact and parseable `aapt` output, when
-  analysis is requested, then HTTP `200` returns parsed metadata, stores the
-  latest ready analysis, and exposes no host paths, stderr, environment values,
-  or tokens.
-- `AC-019-002`: Given unknown artifact ID, missing `aapt`, tool failure,
-  timeout, malformed output, or oversized output, when analysis is requested,
-  then the documented status and error code are returned and no false ready
-  analysis is stored.
+- `AC-019-001`: Given a stored artifact and `aapt` output with a parseable
+  `package: name=...` value, when analysis is requested, then HTTP `200`
+  returns the documented `artifact` and `analysis` fields, stores the latest
+  ready analysis in `metadata.json`, and exposes no host paths, stderr,
+  environment values, or tokens.
+- `AC-019-002`: Given unknown artifact ID, missing `aapt`, nonzero exit,
+  timeout after 5 seconds, stdout larger than 1 MiB, or output without a
+  parseable `package: name=...` value, when analysis is requested, then the
+  documented status and error code are returned and no false ready analysis is
+  stored.
 - `AC-019-003`: Given a rejected Host or Origin analysis request, when handled,
   then the standard security envelope is returned before any host tool is
   executed.
@@ -2154,11 +2166,14 @@ tool name, and error codes are stable for this specification version.
 - Primary boundary: HTTP request through the running server with isolated
   artifact storage and deterministic fake `aapt`.
 - Focused evidence expected: process/HTTP and filesystem tests for successful
-  analysis, persisted ready metadata, unknown artifact, missing/failing/timed
-  out/malformed/oversized tool output, and security rejection.
+  analysis, persisted ready metadata, unknown artifact, missing `aapt`, nonzero
+  exit, 5-second timeout, stdout larger than 1 MiB, output without
+  `package: name=...`, and security rejection.
 - Real-path exercise: start the server with one stored artifact and fake
-  `aapt`, request analysis, inspect JSON, stored metadata, fake-tool logs, and
-  negative cases.
+  `aapt`, request analysis, inspect JSON, stored metadata, fake-tool logs,
+  artifact detail, unknown artifact, missing tool, nonzero exit, timeout,
+  oversized stdout, output without `package: name=...`, and rejected Host or
+  Origin cases.
 - Required environment: Linux host with loopback networking, writable
   temporary filesystem, and temporary executable fixtures.
 - Permitted deterministic substitutes: fake `aapt` executable and disposable
