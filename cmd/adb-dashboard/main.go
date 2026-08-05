@@ -66,6 +66,7 @@ const maxPackageOutputBytes = 1 << 20
 const maxPackageSummaryLines = 50
 const maxArtifactSizeBytes = 256 << 20
 const maxArtifactMultipartBytes = maxArtifactSizeBytes + (1 << 20)
+const maxArtifactAnalysisOutputBytes = 1 << 20
 
 var errPackageNotFound = errors.New("package not found")
 
@@ -1228,6 +1229,11 @@ type artifactUploadResponse struct {
 	Artifact artifactMetadata `json:"artifact"`
 }
 
+type artifactStoredMetadata struct {
+	Artifact artifactMetadata  `json:"artifact"`
+	Analysis *artifactAnalysis `json:"analysis,omitempty"`
+}
+
 type artifactCatalogResponse struct {
 	Artifacts artifactCatalog `json:"artifacts"`
 }
@@ -1238,7 +1244,26 @@ type artifactCatalog struct {
 }
 
 type artifactDetailResponse struct {
+	Artifact artifactMetadata  `json:"artifact"`
+	Analysis *artifactAnalysis `json:"analysis,omitempty"`
+}
+
+type artifactAnalysisResponse struct {
 	Artifact artifactMetadata `json:"artifact"`
+	Analysis artifactAnalysis `json:"analysis"`
+}
+
+type artifactAnalysis struct {
+	Tool               string   `json:"tool"`
+	PackageName        string   `json:"packageName"`
+	VersionName        string   `json:"versionName,omitempty"`
+	VersionCode        string   `json:"versionCode,omitempty"`
+	MinSDKVersion      string   `json:"minSdkVersion,omitempty"`
+	TargetSDKVersion   string   `json:"targetSdkVersion,omitempty"`
+	ApplicationLabel   string   `json:"applicationLabel,omitempty"`
+	LaunchableActivity string   `json:"launchableActivity,omitempty"`
+	Warnings           []string `json:"warnings,omitempty"`
+	AnalyzedAt         string   `json:"analyzedAt"`
 }
 
 type artifactMetadata struct {
@@ -1471,11 +1496,15 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, dataDir s
 		}
 	})
 	mux.HandleFunc("/api/v1/artifacts/", func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
-			writeUnknownRoute(writer)
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/analyze") {
+			handleArtifactAnalysis(writer, request, dataDir)
 			return
 		}
-		handleArtifactDetail(writer, request, dataDir)
+		if request.Method == http.MethodGet {
+			handleArtifactDetail(writer, request, dataDir)
+			return
+		}
+		writeUnknownRoute(writer)
 	})
 	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
 		writeUnknownRoute(writer)
@@ -1498,6 +1527,7 @@ var errInvalidArtifactUpload = errors.New("invalid artifact upload")
 var errArtifactStorageUnavailable = errors.New("artifact storage unavailable")
 var errArtifactNotFound = errors.New("artifact not found")
 var errArtifactCatalogUnavailable = errors.New("artifact catalog unavailable")
+var errArtifactAnalysisFailed = errors.New("artifact analysis failed")
 
 func handleArtifactCatalog(writer http.ResponseWriter, dataDir string) {
 	artifacts, err := readArtifactCatalog(dataDir)
@@ -1523,7 +1553,7 @@ func handleArtifactDetail(writer http.ResponseWriter, request *http.Request, dat
 		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
 		return
 	}
-	artifact, err := readArtifactMetadataFile(filepath.Join(dataDir, "artifacts", id, "metadata.json"))
+	stored, err := readArtifactMetadataFile(filepath.Join(dataDir, "artifacts", id, "metadata.json"))
 	if errors.Is(err, errArtifactNotFound) {
 		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
 		return
@@ -1532,7 +1562,7 @@ func handleArtifactDetail(writer http.ResponseWriter, request *http.Request, dat
 		writeAPIError(writer, http.StatusInternalServerError, "artifact_catalog_unavailable", "Artifact catalog is unavailable")
 		return
 	}
-	writeJSON(writer, http.StatusOK, artifactDetailResponse{Artifact: artifact})
+	writeJSON(writer, http.StatusOK, artifactDetailResponse{Artifact: stored.Artifact, Analysis: stored.Analysis})
 }
 
 func readArtifactCatalog(dataDir string) ([]artifactMetadata, error) {
@@ -1550,11 +1580,11 @@ func readArtifactCatalog(dataDir string) ([]artifactMetadata, error) {
 		if !entry.IsDir() {
 			return nil, errArtifactCatalogUnavailable
 		}
-		artifact, err := readArtifactMetadataFile(filepath.Join(artifactsDir, entry.Name(), "metadata.json"))
+		stored, err := readArtifactMetadataFile(filepath.Join(artifactsDir, entry.Name(), "metadata.json"))
 		if err != nil {
 			return nil, errArtifactCatalogUnavailable
 		}
-		artifacts = append(artifacts, artifact)
+		artifacts = append(artifacts, stored.Artifact)
 	}
 	sort.Slice(artifacts, func(i, j int) bool {
 		if artifacts[i].CreatedAt != artifacts[j].CreatedAt {
@@ -1565,22 +1595,28 @@ func readArtifactCatalog(dataDir string) ([]artifactMetadata, error) {
 	return artifacts, nil
 }
 
-func readArtifactMetadataFile(path string) (artifactMetadata, error) {
+func readArtifactMetadataFile(path string) (artifactStoredMetadata, error) {
 	content, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return artifactMetadata{}, errArtifactNotFound
+		return artifactStoredMetadata{}, errArtifactNotFound
 	}
 	if err != nil {
-		return artifactMetadata{}, errArtifactCatalogUnavailable
+		return artifactStoredMetadata{}, errArtifactCatalogUnavailable
 	}
-	var stored artifactUploadResponse
+	var stored artifactStoredMetadata
 	if err := json.Unmarshal(content, &stored); err != nil {
-		return artifactMetadata{}, errArtifactCatalogUnavailable
+		return artifactStoredMetadata{}, errArtifactCatalogUnavailable
 	}
 	if !validArtifactMetadata(stored.Artifact) {
-		return artifactMetadata{}, errArtifactCatalogUnavailable
+		return artifactStoredMetadata{}, errArtifactCatalogUnavailable
 	}
-	return stored.Artifact, nil
+	if stored.Artifact.AnalysisStatus == "ready" != (stored.Analysis != nil) {
+		return artifactStoredMetadata{}, errArtifactCatalogUnavailable
+	}
+	if stored.Analysis != nil && !validArtifactAnalysis(*stored.Analysis) {
+		return artifactStoredMetadata{}, errArtifactCatalogUnavailable
+	}
+	return stored, nil
 }
 
 func validArtifactMetadata(artifact artifactMetadata) bool {
@@ -1593,6 +1629,14 @@ func validArtifactMetadata(artifact artifactMetadata) bool {
 		return false
 	}
 	_, err := time.Parse(time.RFC3339, artifact.CreatedAt)
+	return err == nil
+}
+
+func validArtifactAnalysis(analysis artifactAnalysis) bool {
+	if analysis.Tool != "aapt" || analysis.PackageName == "" || analysis.AnalyzedAt == "" {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339, analysis.AnalyzedAt)
 	return err == nil
 }
 
@@ -1790,7 +1834,7 @@ func finalizeArtifact(staged *stagedArtifact, metadata artifactMetadata) error {
 	var body bytes.Buffer
 	encoder := json.NewEncoder(&body)
 	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(artifactUploadResponse{Artifact: metadata}); err != nil {
+	if err := encoder.Encode(artifactStoredMetadata{Artifact: metadata}); err != nil {
 		return errArtifactStorageUnavailable
 	}
 	tempMetadataPath := filepath.Join(staged.dir, "metadata.json.tmp")
@@ -1801,6 +1845,159 @@ func finalizeArtifact(staged *stagedArtifact, metadata artifactMetadata) error {
 		return errArtifactStorageUnavailable
 	}
 	return nil
+}
+
+func handleArtifactAnalysis(writer http.ResponseWriter, request *http.Request, dataDir string) {
+	idText := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/api/v1/artifacts/"), "/analyze")
+	id, err := url.PathUnescape(idText)
+	if err != nil || !validArtifactID(id) {
+		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
+		return
+	}
+
+	artifactDir := filepath.Join(dataDir, "artifacts", id)
+	metadataPath := filepath.Join(artifactDir, "metadata.json")
+	stored, err := readArtifactMetadataFile(metadataPath)
+	if errors.Is(err, errArtifactNotFound) {
+		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "artifact_catalog_unavailable", "Artifact catalog is unavailable")
+		return
+	}
+
+	analysis, err := analyzeArtifactAPK(filepath.Join(artifactDir, "original.apk"))
+	if err != nil {
+		writeAPIError(writer, http.StatusBadGateway, "artifact_analysis_failed", "Artifact analysis failed")
+		return
+	}
+	stored.Artifact.AnalysisStatus = "ready"
+	stored.Analysis = &analysis
+	if err := writeArtifactMetadataFile(metadataPath, stored); err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "artifact_catalog_unavailable", "Artifact catalog is unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, artifactAnalysisResponse{Artifact: stored.Artifact, Analysis: analysis})
+}
+
+func analyzeArtifactAPK(apkPath string) (artifactAnalysis, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	command := exec.CommandContext(ctx, "aapt", "dump", "badging", apkPath)
+	command.Stderr = io.Discard
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return artifactAnalysis{}, errArtifactAnalysisFailed
+	}
+	if err := command.Start(); err != nil {
+		return artifactAnalysis{}, errArtifactAnalysisFailed
+	}
+	output, readErr := io.ReadAll(&io.LimitedReader{R: stdout, N: maxArtifactAnalysisOutputBytes + 1})
+	waitErr := command.Wait()
+	if ctx.Err() == context.DeadlineExceeded {
+		return artifactAnalysis{}, errArtifactAnalysisFailed
+	}
+	if readErr != nil || waitErr != nil || len(output) > maxArtifactAnalysisOutputBytes {
+		return artifactAnalysis{}, errArtifactAnalysisFailed
+	}
+	analysis, err := parseAAPTBadging(output)
+	if err != nil {
+		return artifactAnalysis{}, errArtifactAnalysisFailed
+	}
+	analysis.Tool = "aapt"
+	analysis.AnalyzedAt = time.Now().UTC().Format(time.RFC3339)
+	return analysis, nil
+}
+
+func parseAAPTBadging(output []byte) (artifactAnalysis, error) {
+	text := strings.ReplaceAll(string(output), "\r\n", "\n")
+	var analysis artifactAnalysis
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "package:"):
+			analysis.PackageName = aaptQuotedValue(line, "name")
+			analysis.VersionCode = aaptQuotedValue(line, "versionCode")
+			analysis.VersionName = aaptQuotedValue(line, "versionName")
+		case strings.HasPrefix(line, "sdkVersion:"):
+			analysis.MinSDKVersion = aaptColonQuotedValue(line)
+		case strings.HasPrefix(line, "targetSdkVersion:"):
+			analysis.TargetSDKVersion = aaptColonQuotedValue(line)
+		case strings.HasPrefix(line, "application-label:"):
+			analysis.ApplicationLabel = aaptColonQuotedValue(line)
+		case strings.HasPrefix(line, "launchable-activity:"):
+			analysis.LaunchableActivity = aaptQuotedValue(line, "name")
+		case strings.Contains(strings.ToLower(line), "warning"):
+			if len(analysis.Warnings) < 20 {
+				analysis.Warnings = append(analysis.Warnings, trimUTF8Bytes(line, 500))
+			}
+		}
+	}
+	if analysis.PackageName == "" {
+		return artifactAnalysis{}, errArtifactAnalysisFailed
+	}
+	return analysis, nil
+}
+
+func aaptQuotedValue(line, key string) string {
+	prefix := key + "='"
+	start := strings.Index(line, prefix)
+	if start < 0 {
+		return ""
+	}
+	value := line[start+len(prefix):]
+	end := strings.IndexByte(value, '\'')
+	if end < 0 {
+		return ""
+	}
+	return value[:end]
+}
+
+func aaptColonQuotedValue(line string) string {
+	start := strings.Index(line, ":'")
+	if start < 0 {
+		return ""
+	}
+	value := line[start+2:]
+	end := strings.IndexByte(value, '\'')
+	if end < 0 {
+		return ""
+	}
+	return value[:end]
+}
+
+func writeArtifactMetadataFile(path string, stored artifactStoredMetadata) error {
+	var body bytes.Buffer
+	encoder := json.NewEncoder(&body)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(stored); err != nil {
+		return errArtifactCatalogUnavailable
+	}
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, body.Bytes(), 0o600); err != nil {
+		return errArtifactCatalogUnavailable
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return errArtifactCatalogUnavailable
+	}
+	return nil
+}
+
+func trimUTF8Bytes(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) && len(value) > 0 {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func cleanupStagedArtifact(staged *stagedArtifact) {

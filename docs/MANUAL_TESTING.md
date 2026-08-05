@@ -2,18 +2,20 @@
 
 ## Scope
 
-These steps exercise the current verified implementation level through
-`M5-S1`: local CLI behavior, configuration and startup checks, loopback server
+These steps exercise the current implementation level through
+`M5-S3`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
 read-only package inventory API/browser behavior plus package detail API
-behavior and local APK artifact upload API behavior.
+behavior and local APK artifact upload, catalog, detail, and analysis API
+behavior.
 
 ## Requirements
 
 - Linux host with loopback networking.
 - Go toolchain available on `PATH`.
 - `adb` available on `PATH`.
+- `aapt` available on `PATH` for artifact analysis checks.
 - One connected Android device whose `adb devices` state is `device`.
 - Browser available for UI checks.
 
@@ -838,6 +840,54 @@ Expected result:
 - Rejected Origin requests return HTTP `403` with code `forbidden_origin`.
 - Corrupt stored metadata returns HTTP `500` with code
   `artifact_catalog_unavailable` for catalog or detail requests.
+
+## Artifact Analysis API
+
+After uploading an artifact, request local APK analysis:
+
+```sh
+curl -i -sS -X POST -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/analyze"
+
+curl -i -sS "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID"
+```
+
+Expected result:
+
+- Analysis returns HTTP `200` with `artifact` and `analysis`.
+- `artifact.analysisStatus` is `ready`.
+- `analysis.tool` is `aapt`, `analysis.packageName` is non-empty, and
+  `analysis.analyzedAt` is an RFC3339 timestamp.
+- Optional fields such as `versionName`, `versionCode`, `minSdkVersion`,
+  `targetSdkVersion`, `applicationLabel`, `launchableActivity`, and `warnings`
+  appear only when reported by `aapt dump badging`.
+- `$DATA_DIR/artifacts/ARTIFACT_ID/metadata.json` contains the latest ready
+  analysis, and the detail response includes that `analysis`.
+- Responses do not expose stored host paths, `original.apk`, `metadata.json`,
+  command stderr, environment values, or token values.
+- No ADB command runs, no APK is installed, and no network lookup is performed
+  by the dashboard.
+
+Check analysis negative behavior:
+
+```sh
+curl -i -sS -X POST -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/unknown-artifact/analyze"
+
+curl -i -sS -X POST -H "Host: foreign.example" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/analyze"
+```
+
+Expected result:
+
+- Unknown artifact analysis returns HTTP `404` with code `artifact_not_found`.
+- Missing `aapt`, nonzero `aapt`, timeout, oversized stdout, or output without
+  `package: name=...` returns HTTP `502` with code
+  `artifact_analysis_failed`; restart the dashboard with a `PATH` that omits
+  `aapt` to check the missing-tool case.
+- Failed analysis does not replace a prior ready analysis and does not store a
+  false ready result.
+- Rejected Host or Origin requests return HTTP `403` before `aapt` is invoked.
 
 ## Shutdown
 

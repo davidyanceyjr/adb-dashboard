@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -3884,6 +3885,143 @@ func TestM5S2ArtifactCatalogAndDetailAPI(t *testing.T) {
 	assertPathAbsent(t, values["BROWSER_MARKER"])
 }
 
+func TestM5S3ArtifactAnalysisAPI(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+	aaptMarker := filepath.Join(values["TMPDIR"], "aapt-invoked")
+	env = append(env, "AAPT_MARKER="+aaptMarker)
+	writeFakeAAPT(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+if [ "$1" != "dump" ] || [ "$2" != "badging" ]; then
+  printf 'unexpected argv\n' >&2
+  exit 7
+fi
+printf "package: name='com.example.ready' versionCode='42' versionName='1.2.3'\n"
+printf "sdkVersion:'23'\n"
+printf "targetSdkVersion:'35'\n"
+printf "application-label:'Example App'\n"
+printf "launchable-activity: name='com.example.ready.MainActivity'\n"
+printf "WARNING: duplicate resource\n"
+`)
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+	defer server.cleanup(t)
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+
+	apk := apkLikeZip(t)
+	wantSHA := sha256.Sum256(apk)
+	upload := requestArtifactUpload(t, baseURL, "analyze-me.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+	if upload.statusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201; body = %s", upload.statusCode, upload.body)
+	}
+	artifact := assertArtifactUploadJSON(t, upload.body, "analyze-me.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+	metadataPath := filepath.Join(dataDir, "artifacts", artifact.ID, "metadata.json")
+
+	analyze := requestJSON(t, httpRequestSpec{method: "POST", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/analyze", headers: map[string]string{"Origin": baseURL}})
+	if analyze.statusCode != http.StatusOK {
+		t.Fatalf("analyze status = %d, want 200; body = %s", analyze.statusCode, analyze.body)
+	}
+	analysis := assertArtifactAnalysisJSON(t, analyze.body, artifact)
+	assertArtifactResponseNoHostPaths(t, analyze.body, values, dataDir)
+	assertFileContains(t, aaptMarker, "dump badging "+filepath.Join(dataDir, "artifacts", artifact.ID, "original.apk")+"\n")
+	assertArtifactMetadataFileWithAnalysis(t, metadataPath, artifact, analysis)
+
+	detail := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID)})
+	if detail.statusCode != http.StatusOK {
+		t.Fatalf("detail status = %d, want 200; body = %s", detail.statusCode, detail.body)
+	}
+	assertArtifactDetailJSONWithAnalysis(t, detail.body, artifact, analysis)
+	assertArtifactResponseNoHostPaths(t, detail.body, values, dataDir)
+
+	unknown := requestJSON(t, httpRequestSpec{method: "POST", url: baseURL + "/api/v1/artifacts/unknown-artifact/analyze", headers: map[string]string{"Origin": baseURL}})
+	if unknown.statusCode != http.StatusNotFound {
+		t.Fatalf("unknown analyze status = %d, want 404; body = %s", unknown.statusCode, unknown.body)
+	}
+	assertAPIErrorEnvelope(t, unknown.body, "artifact_not_found")
+	assertFileContains(t, aaptMarker, "dump badging "+filepath.Join(dataDir, "artifacts", artifact.ID, "original.apk")+"\n")
+
+	for _, test := range []struct {
+		name    string
+		request httpRequestSpec
+		code    string
+	}{
+		{name: "foreign_host", request: httpRequestSpec{method: "POST", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/analyze", host: "foreign.example"}, code: "forbidden_host"},
+		{name: "foreign_origin", request: httpRequestSpec{method: "POST", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/analyze", headers: map[string]string{"Origin": "http://foreign.example"}}, code: "forbidden_origin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := requestJSON(t, test.request)
+			if response.statusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+			}
+			assertSecurityErrorEnvelope(t, response.body, test.code)
+			assertFileContains(t, aaptMarker, "dump badging "+filepath.Join(dataDir, "artifacts", artifact.ID, "original.apk")+"\n")
+		})
+	}
+
+	for _, test := range []struct {
+		name           string
+		script         string
+		removeTool     bool
+		requestTimeout time.Duration
+	}{
+		{name: "missing_aapt", removeTool: true},
+		{
+			name: "nonzero_exit",
+			script: `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+printf 'host path /tmp/secret/original.apk token=secret' >&2
+exit 9
+`,
+		},
+		{
+			name: "timeout",
+			script: `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+sleep 6
+printf "package: name='com.example.late'\n"
+`,
+			requestTimeout: 8 * time.Second,
+		},
+		{
+			name: "oversized_stdout",
+			script: `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+perl -e 'print "x" x (1048577)'
+`,
+		},
+		{
+			name: "missing_package_name",
+			script: `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+printf "application-label:'No Package'\n"
+`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.Remove(aaptMarker); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if test.removeTool {
+				env = removeFakeAAPT(t, env)
+			} else {
+				writeFakeAAPT(t, env, test.script)
+			}
+			response := requestJSON(t, httpRequestSpec{method: "POST", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/analyze", headers: map[string]string{"Origin": baseURL}, timeout: test.requestTimeout})
+			if response.statusCode != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502; body = %s", response.statusCode, response.body)
+			}
+			assertAPIErrorEnvelope(t, response.body, "artifact_analysis_failed")
+			assertArtifactResponseNoHostPaths(t, response.body, values, dataDir)
+			assertArtifactMetadataFileWithAnalysis(t, metadataPath, artifact, analysis)
+		})
+	}
+
+	assertPathAbsent(t, values["ADB_MARKER"])
+	assertPathAbsent(t, values["BROWSER_MARKER"])
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -4687,6 +4825,7 @@ type httpRequestSpec struct {
 	headers     map[string]string
 	requestURI  string
 	rawHTTPHost string
+	timeout     time.Duration
 }
 
 type httpResponse struct {
@@ -4709,7 +4848,11 @@ func requestJSON(t *testing.T, spec httpRequestSpec) httpResponse {
 		return rawHTTPRequest(t, spec)
 	}
 
-	client := http.Client{Timeout: 5 * time.Second}
+	timeout := spec.timeout
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+	client := http.Client{Timeout: timeout}
 	request, err := http.NewRequest(spec.method, spec.url, nil)
 	if err != nil {
 		t.Fatalf("new request %s %s: %v", spec.method, spec.url, err)
@@ -5092,6 +5235,37 @@ func writeFakeADB(t *testing.T, env []string, script string) string {
 	return adbPath
 }
 
+func writeFakeAAPT(t *testing.T, env []string, script string) string {
+	t.Helper()
+
+	aaptPath := fakeAAPTPath(t, env)
+	if err := os.WriteFile(aaptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return aaptPath
+}
+
+func removeFakeAAPT(t *testing.T, env []string) []string {
+	t.Helper()
+
+	aaptPath := fakeAAPTPath(t, env)
+	if err := os.Remove(aaptPath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return setEnv(env, "PATH", filepath.Dir(aaptPath))
+}
+
+func fakeAAPTPath(t *testing.T, env []string) string {
+	t.Helper()
+
+	pathValue := envMap(env)["PATH"]
+	first, _, _ := strings.Cut(pathValue, string(os.PathListSeparator))
+	if first == "" {
+		t.Fatal("isolated PATH has no first directory")
+	}
+	return filepath.Join(first, "aapt")
+}
+
 func removeFakeADB(t *testing.T, env []string) []string {
 	t.Helper()
 
@@ -5381,6 +5555,84 @@ func assertArtifactDetailJSON(t *testing.T, body []byte, want artifactUploadAsse
 	assertArtifactEqual(t, artifact, want, body)
 }
 
+type artifactAnalysisAssertion struct {
+	Tool               string   `json:"tool"`
+	PackageName        string   `json:"packageName"`
+	VersionName        string   `json:"versionName,omitempty"`
+	VersionCode        string   `json:"versionCode,omitempty"`
+	MinSDKVersion      string   `json:"minSdkVersion,omitempty"`
+	TargetSDKVersion   string   `json:"targetSdkVersion,omitempty"`
+	ApplicationLabel   string   `json:"applicationLabel,omitempty"`
+	LaunchableActivity string   `json:"launchableActivity,omitempty"`
+	Warnings           []string `json:"warnings,omitempty"`
+	AnalyzedAt         string   `json:"analyzedAt"`
+}
+
+func assertArtifactAnalysisJSON(t *testing.T, body []byte, wantArtifact artifactUploadAssertion) artifactAnalysisAssertion {
+	t.Helper()
+
+	var got struct {
+		Artifact artifactUploadAssertion   `json:"artifact"`
+		Analysis artifactAnalysisAssertion `json:"analysis"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal artifact analysis JSON: %v\nbody: %s", err, body)
+	}
+	wantReady := wantArtifact
+	wantReady.AnalysisStatus = "ready"
+	assertArtifactEqual(t, got.Artifact, wantReady, body)
+	assertArtifactAnalysisEqual(t, got.Analysis, body)
+	return got.Analysis
+}
+
+func assertArtifactDetailJSONWithAnalysis(t *testing.T, body []byte, wantArtifact artifactUploadAssertion, wantAnalysis artifactAnalysisAssertion) {
+	t.Helper()
+
+	var got struct {
+		Artifact artifactUploadAssertion   `json:"artifact"`
+		Analysis artifactAnalysisAssertion `json:"analysis"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal artifact detail JSON: %v\nbody: %s", err, body)
+	}
+	wantReady := wantArtifact
+	wantReady.AnalysisStatus = "ready"
+	assertArtifactEqual(t, got.Artifact, wantReady, body)
+	if !reflect.DeepEqual(got.Analysis, wantAnalysis) {
+		t.Fatalf("detail analysis = %#v, want %#v; body = %s", got.Analysis, wantAnalysis, body)
+	}
+}
+
+func assertArtifactAnalysisEqual(t *testing.T, got artifactAnalysisAssertion, body []byte) {
+	t.Helper()
+
+	if got.Tool != "aapt" ||
+		got.PackageName != "com.example.ready" ||
+		got.VersionName != "1.2.3" ||
+		got.VersionCode != "42" ||
+		got.MinSDKVersion != "23" ||
+		got.TargetSDKVersion != "35" ||
+		got.ApplicationLabel != "Example App" ||
+		got.LaunchableActivity != "com.example.ready.MainActivity" ||
+		len(got.Warnings) != 1 ||
+		got.Warnings[0] != "WARNING: duplicate resource" {
+		t.Fatalf("analysis = %#v, want parsed aapt metadata; body = %s", got, body)
+	}
+	if _, err := time.Parse(time.RFC3339, got.AnalyzedAt); err != nil {
+		t.Fatalf("analyzedAt = %q, want RFC3339 timestamp: %v", got.AnalyzedAt, err)
+	}
+}
+
+func assertArtifactMetadataFileWithAnalysis(t *testing.T, path string, wantArtifact artifactUploadAssertion, wantAnalysis artifactAnalysisAssertion) {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read metadata %s: %v", path, err)
+	}
+	assertArtifactDetailJSONWithAnalysis(t, content, wantArtifact, wantAnalysis)
+}
+
 func rawMessageKeys(values map[string]json.RawMessage) map[string]any {
 	keys := make(map[string]any, len(values))
 	for key := range values {
@@ -5496,6 +5748,8 @@ func apiErrorMessage(code string) string {
 		return "Artifact not found"
 	case "artifact_catalog_unavailable":
 		return "Artifact catalog is unavailable"
+	case "artifact_analysis_failed":
+		return "Artifact analysis failed"
 	default:
 		return ""
 	}
