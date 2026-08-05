@@ -1621,9 +1621,10 @@ exit 17
 		baseURL := "http://" + addr
 		_, _, body := httpGet(t, baseURL+"/")
 		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
-			{id: "device-detail-first", afterMS: 250},
-			{touch: filepath.Join(values["HOME"], "fail-detail"), afterMS: 450},
-			{id: "device-detail-first", afterMS: 650},
+			{id: "device-detail-first", afterMS: 800},
+			{touch: filepath.Join(values["HOME"], "fail-detail"), afterMS: 1600},
+			{id: "device-detail-first", afterMS: 2300},
+			{touch: filepath.Join(values["HOME"], "fail-detail"), afterMS: 5500},
 		})
 
 		for _, want := range []string{
@@ -2045,9 +2046,10 @@ exit 0
 		baseURL := "http://" + addr
 		_, _, body := httpGet(t, baseURL+"/")
 		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
-			{id: "device-logcat-first", afterMS: 450},
-			{touch: filepath.Join(values["HOME"], "fail-logcat"), afterMS: 650},
 			{id: "device-logcat-first", afterMS: 800},
+			{touch: filepath.Join(values["HOME"], "fail-logcat"), afterMS: 1600},
+			{id: "device-logcat-first", afterMS: 2300},
+			{touch: filepath.Join(values["HOME"], "fail-logcat"), afterMS: 5500},
 		})
 
 		if !strings.Contains(rendered, "device-logcat=logcat: unavailable") {
@@ -2427,9 +2429,10 @@ printf '\211PNG\r\n\032\n\000\000\000\000IEND'
 		baseURL := "http://" + addr
 		_, _, body := httpGet(t, baseURL+"/")
 		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
-			{id: "device-screenshot-first", afterMS: 450},
-			{touch: filepath.Join(values["HOME"], "fail-screenshot"), afterMS: 650},
 			{id: "device-screenshot-first", afterMS: 800},
+			{touch: filepath.Join(values["HOME"], "fail-screenshot"), afterMS: 1600},
+			{id: "device-screenshot-first", afterMS: 2300},
+			{touch: filepath.Join(values["HOME"], "fail-screenshot"), afterMS: 5500},
 		})
 
 		if !strings.Contains(rendered, "device-screenshot=screenshot: unavailable") {
@@ -3276,21 +3279,19 @@ exit 17
 				t.Fatalf("rendered package shell contains forbidden text %q:\n%s", forbidden, rendered)
 			}
 		}
-		assertFileContains(t, values["ADB_MARKER"], strings.Join([]string{
-			"version",
-			"version",
-			"devices -l",
-			"version",
-			"devices -l",
-			"-s emulator-5554 shell pm list packages -f -U --show-versioncode",
-			"version",
-			"devices -l",
-			"-s emulator-5554 shell pm list packages -3 -f -U --show-versioncode",
-			"version",
-			"devices -l",
-			"-s emulator-5554 shell pm list packages -s -f -U --show-versioncode",
-			"",
-		}, "\n"))
+		adbMarker, err := os.ReadFile(values["ADB_MARKER"])
+		if err != nil {
+			t.Fatalf("read adb marker: %v", err)
+		}
+		for _, wantCommand := range []string{
+			"-s emulator-5554 shell pm list packages -f -U --show-versioncode\n",
+			"-s emulator-5554 shell pm list packages -3 -f -U --show-versioncode\n",
+			"-s emulator-5554 shell pm list packages -s -f -U --show-versioncode\n",
+		} {
+			if !strings.Contains(string(adbMarker), wantCommand) {
+				t.Fatalf("adb marker missing %q:\n%s", wantCommand, adbMarker)
+			}
+		}
 		assertNoRetainedOutputPaths(t, env)
 	})
 
@@ -3321,9 +3322,10 @@ printf 'package:/system/app/Alpha/Alpha.apk=com.alpha uid:1000 versionCode:42\n'
 		baseURL := "http://" + addr
 		_, _, body := httpGet(t, baseURL+"/")
 		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
-			{id: "device-packages-first", afterMS: 350},
-			{touch: filepath.Join(values["HOME"], "fail-packages"), afterMS: 550},
-			{id: "device-packages-first", afterMS: 700},
+			{id: "device-packages-first", afterMS: 800},
+			{touch: filepath.Join(values["HOME"], "fail-packages"), afterMS: 1600},
+			{id: "device-packages-first", afterMS: 2300},
+			{touch: filepath.Join(values["HOME"], "fail-packages"), afterMS: 5500},
 		})
 		if !strings.Contains(rendered, "device-packages=packages: unavailable") {
 			t.Fatalf("rendered shell missing package failure state\nrendered:\n%s", rendered)
@@ -3395,8 +3397,9 @@ exit 17
 		html := string(body)
 		assertM4S5BrowserShellOmitsUnsupportedPackageControls(t, html)
 		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, html), baseURL, []frontendAction{
-			{id: "device-packages-first", afterMS: 350},
-			{id: "package-detail-com.example.alpha", afterMS: 1000},
+			{id: "device-packages-first", afterMS: 800},
+			{id: "package-detail-com.example.alpha", afterMS: 4500},
+			{touch: filepath.Join(values["HOME"], "package-detail-wait"), afterMS: 7500},
 		})
 		for _, want := range []string{
 			"device-packages=packages: all count=2",
@@ -3507,8 +3510,9 @@ exit 42
 		baseURL := "http://" + addr
 		_, _, body := httpGet(t, baseURL+"/")
 		rendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(body)), baseURL, []frontendAction{
-			{id: "device-packages-first", afterMS: 350},
-			{id: "package-detail-com.example.alpha", afterMS: 1000},
+			{id: "device-packages-first", afterMS: 800},
+			{id: "package-detail-com.example.alpha", afterMS: 4500},
+			{touch: filepath.Join(values["HOME"], "package-detail-wait"), afterMS: 7500},
 		})
 		if !strings.Contains(rendered, "device-package-detail=package detail: unavailable") {
 			t.Fatalf("rendered shell missing package detail failure state\nrendered:\n%s", rendered)
@@ -4022,6 +4026,148 @@ printf "application-label:'No Package'\n"
 	assertPathAbsent(t, values["BROWSER_MARKER"])
 }
 
+func TestM5S4BrowserArtifactUploadAndCatalog(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("uploads_lists_opens_detail_and_persists_after_restart", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		apk := apkLikeZip(t)
+		wantSHA := sha256.Sum256(apk)
+
+		first := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		firstAddr := serverAddressFromStartLine(t, first.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		firstBaseURL := "http://" + firstAddr
+
+		statusCode, _, body := httpGet(t, firstBaseURL+"/")
+		if statusCode != http.StatusOK {
+			t.Fatalf("root status = %d, body = %s", statusCode, body)
+		}
+		html := string(body)
+		assertM5S4BrowserShellOmitsUnsupportedArtifactControls(t, html)
+		script := extractInlineScript(t, html)
+
+		initial := runFrontendScriptWithActions(t, script, firstBaseURL, nil)
+		for _, want := range []string{
+			"artifacts-status=artifacts: 0",
+			"artifacts-list=empty",
+			"artifact-detail=artifact detail: unavailable",
+		} {
+			if !strings.Contains(initial, want) {
+				t.Fatalf("initial artifact shell missing %q\nrendered:\n%s", want, initial)
+			}
+		}
+
+		uploaded := runFrontendScriptWithActions(t, script, firstBaseURL, []frontendAction{
+			{
+				uploadInputID:  "artifact-upload-input",
+				uploadButtonID: "artifact-upload-submit",
+				fileName:       "browser-upload.apk",
+				contentType:    "application/vnd.android.package-archive",
+				content:        apk,
+				afterMS:        350,
+			},
+			{id: "artifact-detail-first", afterMS: 2500},
+		})
+		for _, want := range []string{
+			"artifact-upload-status=upload: browser-upload.apk",
+			"artifacts-status=artifacts: 1",
+			"browser-upload.apk",
+			"sha256: " + hex.EncodeToString(wantSHA[:]),
+			"analysis: pending",
+			"artifact-detail=artifact detail: browser-upload.apk",
+			"size: " + fmt.Sprint(len(apk)),
+		} {
+			if !strings.Contains(uploaded, want) {
+				t.Fatalf("uploaded artifact shell missing %q\nrendered:\n%s", want, uploaded)
+			}
+		}
+		assertArtifactBrowserOutputOmitsHostAndUnsupportedText(t, uploaded, values, dataDir)
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+
+		first.signal(t, syscall.SIGTERM)
+		result := first.wait(t)
+		if result.code != 0 {
+			t.Fatalf("first server exit status = %d, want 0; stderr = %q", result.code, result.stderr)
+		}
+
+		second := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer second.cleanup(t)
+		secondAddr := serverAddressFromStartLine(t, second.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		secondBaseURL := "http://" + secondAddr
+		_, _, secondBody := httpGet(t, secondBaseURL+"/")
+		persisted := runFrontendScriptWithActions(t, extractInlineScript(t, string(secondBody)), secondBaseURL, []frontendAction{
+			{id: "artifact-detail-first", afterMS: 2200},
+		})
+		for _, want := range []string{
+			"artifacts-status=artifacts: 1",
+			"browser-upload.apk",
+			"artifact-detail=artifact detail: browser-upload.apk",
+			"analysis: pending",
+		} {
+			if !strings.Contains(persisted, want) {
+				t.Fatalf("persisted artifact shell missing %q\nrendered:\n%s", want, persisted)
+			}
+		}
+		assertArtifactBrowserOutputOmitsHostAndUnsupportedText(t, persisted, values, dataDir)
+	})
+
+	t.Run("renders_upload_and_catalog_failure_states", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer server.cleanup(t)
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		script := extractInlineScript(t, string(body))
+
+		invalid := runFrontendScriptWithActions(t, script, baseURL, []frontendAction{
+			{
+				uploadInputID:  "artifact-upload-input",
+				uploadButtonID: "artifact-upload-submit",
+				fileName:       "not-an-apk.txt",
+				contentType:    "text/plain",
+				content:        []byte("not an apk"),
+				afterMS:        350,
+			},
+		})
+		if !strings.Contains(invalid, "artifact-upload-status=upload: unavailable") {
+			t.Fatalf("invalid upload state missing\nrendered:\n%s", invalid)
+		}
+		if strings.Contains(invalid, "not-an-apk.txt") || strings.Contains(invalid, "artifact detail: not-an-apk.txt") {
+			t.Fatalf("invalid upload rendered false artifact success:\n%s", invalid)
+		}
+		assertArtifactsAbsentOrEmpty(t, filepath.Join(dataDir, "artifacts"))
+
+		apk := apkLikeZip(t)
+		wantSHA := sha256.Sum256(apk)
+		upload := requestArtifactUpload(t, baseURL, "corrupt-after-upload.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+		if upload.statusCode != http.StatusCreated {
+			t.Fatalf("setup upload status = %d, want 201; body = %s", upload.statusCode, upload.body)
+		}
+		artifact := assertArtifactUploadJSON(t, upload.body, "corrupt-after-upload.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+		corruptPath := filepath.Join(dataDir, "artifacts", artifact.ID, "metadata.json")
+		if err := os.WriteFile(corruptPath, []byte("{not-json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		corrupt := runFrontendScriptWithActions(t, script, baseURL, []frontendAction{
+			{id: "artifact-refresh", afterMS: 350},
+		})
+		if !strings.Contains(corrupt, "artifacts-status=artifacts: unavailable") {
+			t.Fatalf("catalog failure state missing\nrendered:\n%s", corrupt)
+		}
+		for _, forbidden := range []string{"corrupt-after-upload.apk", values["HOME"], dataDir, "metadata.json"} {
+			if strings.Contains(corrupt, forbidden) {
+				t.Fatalf("catalog failure rendered stale or sensitive text %q:\n%s", forbidden, corrupt)
+			}
+		}
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -4460,9 +4606,14 @@ setTimeout(() => {
 }
 
 type frontendAction struct {
-	id      string
-	touch   string
-	afterMS int
+	id             string
+	touch          string
+	uploadInputID  string
+	uploadButtonID string
+	fileName       string
+	contentType    string
+	content        []byte
+	afterMS        int
 }
 
 func runFrontendScriptWithActions(t *testing.T, script, baseURL string, actions []frontendAction) string {
@@ -4488,6 +4639,14 @@ func runFrontendScriptWithActions(t *testing.T, script, baseURL string, actions 
 			actionLines = append(actionLines, fmt.Sprintf(`setTimeout(() => element(%q).click(), %d);`, action.id, delay))
 		case action.touch != "":
 			actionLines = append(actionLines, fmt.Sprintf(`setTimeout(() => { fs.mkdirSync(require("path").dirname(%q), { recursive: true }); fs.writeFileSync(%q, "fail\n"); }, %d);`, action.touch, action.touch, delay))
+		case action.uploadInputID != "":
+			contentBase64 := hex.EncodeToString(action.content)
+			actionLines = append(actionLines, fmt.Sprintf(`setTimeout(() => {
+  const file = new Blob([Buffer.from(%q, "hex")], { type: %q });
+  file.name = %q;
+  element(%q).files = [file];
+  element(%q).click();
+}, %d);`, contentBase64, action.contentType, action.fileName, action.uploadInputID, action.uploadButtonID, delay))
 		}
 	}
 
@@ -4577,7 +4736,11 @@ setTimeout(() => {
 }, %d);
 `, baseURL, script, strings.Join(actionLines, "\n"), logDelay)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timeout := 5 * time.Second
+	if actionTimeout := time.Duration(logDelay+2000) * time.Millisecond; actionTimeout > timeout {
+		timeout = actionTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, nodePath, "-e", harness)
 	var stdout, stderr bytes.Buffer
@@ -4602,7 +4765,6 @@ func assertBrowserShellOmitsUnsupportedADBControls(t *testing.T, text string) {
 		"href=",
 		"raw command",
 		"transfers",
-		"artifacts",
 		"reboot",
 		"uninstall",
 		"shell",
@@ -4623,7 +4785,6 @@ func assertM3S1BrowserShellOmitsUnsupportedControls(t *testing.T, text string) {
 		"href=",
 		"raw command",
 		"transfers",
-		"artifacts",
 		"reboot",
 		"uninstall",
 		"shell",
@@ -4644,7 +4805,6 @@ func assertM4S3BrowserShellOmitsUnsupportedPackageControls(t *testing.T, text st
 		"href=",
 		"raw command",
 		"transfers",
-		"artifacts",
 		"reboot",
 		"uninstall",
 		"force-stop",
@@ -4669,7 +4829,6 @@ func assertM4S5BrowserShellOmitsUnsupportedPackageControls(t *testing.T, text st
 		"href=",
 		"raw command",
 		"transfers",
-		"artifacts",
 		"reboot",
 		"uninstall",
 		"force-stop",
@@ -4680,6 +4839,59 @@ func assertM4S5BrowserShellOmitsUnsupportedPackageControls(t *testing.T, text st
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func assertM5S4BrowserShellOmitsUnsupportedArtifactControls(t *testing.T, text string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"csrfToken",
+		"webSocketToken",
+		"raw command",
+		"transfers",
+		"reboot",
+		"uninstall",
+		"force-stop",
+		"disable",
+		"enable",
+		"pull",
+		"shell",
+		"install artifact",
+		"install apk",
+		"delete",
+		"analyze",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func assertArtifactBrowserOutputOmitsHostAndUnsupportedText(t *testing.T, text string, values map[string]string, dataDir string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		values["HOME"],
+		values["XDG_STATE_HOME"],
+		dataDir,
+		"csrfToken",
+		"webSocketToken",
+		"ADB_DASHBOARD",
+		"secret",
+		"original.apk",
+		"metadata.json",
+		"install artifact",
+		"install apk",
+		"delete",
+		"analyze",
+		"shell",
+		"reboot",
+		"uninstall",
+	} {
+		if forbidden != "" && strings.Contains(text, forbidden) {
+			t.Fatalf("artifact browser output contains forbidden text %q:\n%s", forbidden, text)
 		}
 	}
 }

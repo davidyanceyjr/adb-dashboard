@@ -2446,6 +2446,9 @@ const dashboardShellHTML = `<!doctype html>
     .device-list {
       white-space: pre-line;
     }
+    .artifact-list {
+      white-space: pre-line;
+    }
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -2460,6 +2463,10 @@ const dashboardShellHTML = `<!doctype html>
       padding: 6px 10px;
       font: inherit;
       cursor: pointer;
+    }
+    input[type="file"] {
+      font: inherit;
+      max-width: 100%;
     }
     .device-detail {
       margin-top: 8px;
@@ -2488,6 +2495,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
       <dt>storage</dt><dd id="storage-status">storage: unavailable</dd>
       <dt>host tools</dt><dd id="host-tools-status">host tools: unavailable</dd>
+      <dt>artifacts</dt><dd><span id="artifacts-status">artifacts: unavailable</span><div class="controls"><input type="file" id="artifact-upload-input" accept=".apk,application/vnd.android.package-archive"><button type="button" id="artifact-upload-submit">upload</button><button type="button" id="artifact-refresh">refresh</button><button type="button" id="artifact-detail-first">details</button></div><div id="artifact-upload-status" class="device-detail">upload: unavailable</div><div id="artifacts-list" class="artifact-list"></div><div id="artifact-detail" class="device-detail">artifact detail: unavailable</div></dd>
     </dl>
   </main>
   <script>
@@ -2511,8 +2519,10 @@ const dashboardShellHTML = `<!doctype html>
   let latestDevices = [];
   let latestPackages = [];
   let latestPackageScope = "all";
+  let latestArtifacts = [];
   let refreshSequence = 0;
   let packageDetailSequence = 0;
+  let artifactSequence = 0;
 
   const packageDetailButtonID = (packageName) => {
     return "package-detail-" + String(packageName || "");
@@ -2531,6 +2541,127 @@ const dashboardShellHTML = `<!doctype html>
       return;
     }
     setText("device-packages-list", "");
+  };
+
+  const artifactRowText = (artifact) => {
+    const parts = [String(artifact.originalName || "")];
+    if (artifact.sizeBytes) {
+      parts.push("size:" + String(artifact.sizeBytes));
+    }
+    if (artifact.sha256) {
+      parts.push("sha256: " + String(artifact.sha256));
+    }
+    parts.push("analysis: " + String(artifact.analysisStatus || "pending"));
+    return parts.join(" ");
+  };
+
+  const clearArtifactRows = () => {
+    latestArtifacts = [];
+    const target = document.getElementById("artifacts-list");
+    if (target && target.replaceChildren) {
+      target.replaceChildren();
+      return;
+    }
+    setText("artifacts-list", "");
+  };
+
+  const renderArtifactRows = (items) => {
+    latestArtifacts = items;
+    const target = document.getElementById("artifacts-list");
+    if (!target || !target.replaceChildren || !document.createElement) {
+      setText("artifacts-list", items.map((item) => artifactRowText(item)).join("\n"));
+      return;
+    }
+    target.replaceChildren();
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.textContent = artifactRowText(item);
+      target.appendChild(row);
+    }
+  };
+
+  const artifactsUnavailable = () => {
+    artifactSequence++;
+    setText("artifacts-status", "artifacts: unavailable");
+    clearArtifactRows();
+    setText("artifact-detail", "artifact detail: unavailable");
+  };
+
+  const renderArtifactDetail = (artifact) => {
+    const lines = [
+      "artifact detail: " + String(artifact.originalName || ""),
+      "size: " + String(artifact.sizeBytes || 0),
+    ];
+    if (artifact.sha256) {
+      lines.push("sha256: " + String(artifact.sha256));
+    }
+    lines.push("analysis: " + String(artifact.analysisStatus || "pending"));
+    setText("artifact-detail", lines.join("\n"));
+  };
+
+  const loadArtifacts = async () => {
+    const sequence = ++artifactSequence;
+    try {
+      const artifactsResponse = await fetch("/api/v1/artifacts", { credentials: "same-origin" });
+      if (!artifactsResponse.ok) {
+        throw new Error("artifacts unavailable");
+      }
+      const payload = await artifactsResponse.json();
+      const artifacts = payload.artifacts || {};
+      const items = Array.isArray(artifacts.items) ? artifacts.items : [];
+      if (sequence !== artifactSequence) {
+        return;
+      }
+      setText("artifacts-status", "artifacts: " + String(items.length));
+      setText("artifact-detail", "artifact detail: unavailable");
+      if (items.length === 0) {
+        clearArtifactRows();
+        setText("artifacts-list", "empty");
+        return;
+      }
+      renderArtifactRows(items);
+    } catch (_) {
+      if (sequence === artifactSequence) {
+        artifactsUnavailable();
+      }
+    }
+  };
+
+  const uploadArtifact = async () => {
+    const input = document.getElementById("artifact-upload-input");
+    const file = input && input.files && input.files[0];
+    if (!file) {
+      setText("artifact-upload-status", "upload: unavailable");
+      return;
+    }
+    setText("artifact-upload-status", "upload: loading");
+    try {
+      const body = new FormData();
+      body.append("artifact", file, file.name || "artifact.apk");
+      const response = await fetch("/api/v1/artifacts", {
+        method: "POST",
+        credentials: "same-origin",
+        body,
+      });
+      if (!response.ok) {
+        throw new Error("upload unavailable");
+      }
+      const payload = await response.json();
+      const artifact = payload.artifact || {};
+      setText("artifact-upload-status", "upload: " + String(artifact.originalName || file.name || "artifact.apk"));
+      await loadArtifacts();
+    } catch (_) {
+      setText("artifact-upload-status", "upload: unavailable");
+    }
+  };
+
+  const loadFirstArtifactDetail = async () => {
+    const artifact = latestArtifacts[0];
+    if (!artifact || !artifact.id) {
+      setText("artifact-detail", "artifact detail: unavailable");
+      return;
+    }
+    renderArtifactDetail(artifact);
   };
 
   const renderPackageRows = (items) => {
@@ -2586,6 +2717,8 @@ const dashboardShellHTML = `<!doctype html>
     setText("sessions-status", "sessions: unavailable");
     setText("storage-status", "storage: unavailable");
     setText("host-tools-status", "host tools: unavailable");
+    setText("artifact-upload-status", "upload: unavailable");
+    artifactsUnavailable();
   };
 
   const devicesUnavailable = () => {
@@ -2843,6 +2976,7 @@ const dashboardShellHTML = `<!doctype html>
       setText("sessions-status", "sessions: " + status.sessions.status);
       setText("storage-status", "storage: " + status.storage.status);
       setText("host-tools-status", "host tools: " + status.hostTools.status);
+      await loadArtifacts();
     } catch (_) {
       unavailable();
     }
@@ -2880,6 +3014,18 @@ const dashboardShellHTML = `<!doctype html>
     const systemPackages = document.getElementById("package-scope-system");
     if (systemPackages) {
       systemPackages.addEventListener("click", () => loadFirstDevicePackages("system"));
+    }
+    const artifactRefresh = document.getElementById("artifact-refresh");
+    if (artifactRefresh) {
+      artifactRefresh.addEventListener("click", loadArtifacts);
+    }
+    const artifactUpload = document.getElementById("artifact-upload-submit");
+    if (artifactUpload) {
+      artifactUpload.addEventListener("click", uploadArtifact);
+    }
+    const artifactDetail = document.getElementById("artifact-detail-first");
+    if (artifactDetail) {
+      artifactDetail.addEventListener("click", loadFirstArtifactDetail);
     }
     loadStatus();
   });

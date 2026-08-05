@@ -616,8 +616,10 @@ Expected result:
 - Future areas such as watcher, jobs, sessions, storage, and host tools show
   `NIY`.
 - No bootstrap token values are visible.
+- Artifact upload, refresh, and detail controls are visible.
 - No unsupported controls for shell, install, uninstall, transfer, reboot,
-  jobs, sessions, artifacts, screen recording, or settings appear.
+  jobs, sessions, artifact analysis, artifact deletion, screen recording, or
+  settings appear.
 
 Click `refresh`.
 
@@ -703,6 +705,25 @@ Expected result:
 - No install, uninstall, clear, stop, launch, pull, shell, file-transfer, or
   mutation control appears.
 - No package detail output is retained in repository data or temp directories.
+
+Upload a disposable APK-like ZIP with the artifact upload control.
+
+Expected result:
+
+- Upload status shows `upload: FILENAME`.
+- Artifact status shows `artifacts: N`.
+- The catalog row shows the uploaded file name, size, SHA-256, and
+  `analysis: pending`.
+- Clicking artifact `details` shows the uploaded file name, size, SHA-256, and
+  pending analysis state derived from the backend catalog response.
+- Refreshing the browser or restarting the server with the same `$DATA_DIR`
+  preserves the catalog and detail state.
+- Invalid uploads show `upload: unavailable` and do not render a false
+  artifact row or detail.
+- If the catalog cannot be read, artifact status shows
+  `artifacts: unavailable` and stale catalog/detail text is cleared.
+- No browser artifact control installs an APK, mutates a device, runs shell
+  commands, triggers analysis, deletes artifacts, or exposes stored host paths.
 
 ## Non-Ready Device Observation
 
