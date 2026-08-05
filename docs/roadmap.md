@@ -1161,28 +1161,30 @@ Every implementation slice must:
 
 - Status: accepted
 - Mode: feature
-- Purpose: List and retrieve stored artifact metadata and current analysis
-  state through stable API responses.
+- Purpose: List and retrieve stored artifact metadata and pending/no-analysis
+  state through stable API responses before APK analysis exists.
 - Specification references: `CAP-018`, `CAP-020`, `AC-020-001`,
   `AC-020-002`, `AC-020-003`, `INV-SEC-001`, `INV-SEC-003`,
   `INV-DATA-004`, `DATA-006`, `DATA-007`
 - Observable result: A same-origin HTTP client can list zero or more artifacts
-  sorted newest first and retrieve one artifact's metadata without host path or
-  token disclosure.
+  sorted by `createdAt` descending with `id` ascending as the tie-breaker,
+  retrieve one artifact's metadata with pending/no-analysis state, and observe
+  no host path or token disclosure.
 - Primary acceptance boundary: HTTP request through the running server with
   isolated artifact storage.
 - Expected red or baseline-green evidence: The focused HTTP/filesystem test
   fails because `GET /api/v1/artifacts` or
-  `GET /api/v1/artifacts/{artifactId}` is absent, sorting is unstable, unknown
-  artifact errors are incorrect, corrupt metadata is hidden as success, or host
-  paths leak.
+  `GET /api/v1/artifacts/{artifactId}` is absent, sorting by `createdAt`
+  descending with `id` ascending tie-breaks is unstable, pending/no-analysis
+  detail output is incorrect, unknown artifact errors are incorrect, corrupt
+  metadata is hidden as success, or host paths leak.
 - Focused verification command or deterministic discovery rule: Discover the
   focused artifact catalog API test command and record it in
   `.codex/plans/current.md` before implementation begins.
 - Real-path exercise: Start the server with isolated empty storage, request the
-  empty catalog, upload two artifacts, request sorted catalog and detail,
-  simulate corrupt metadata, request unknown artifact and rejected Host/Origin
-  cases, and inspect filesystem side effects.
+  empty catalog, upload two artifacts, request sorted catalog and detail for
+  pending/no-analysis state, simulate corrupt metadata, request unknown artifact
+  and rejected Host/Origin cases, and inspect filesystem side effects.
 - Broad verification: Run applicable repository test, formatting, lint,
   type-check, build, browser-script, API, and filesystem checks discovered from
   repository entry points.
@@ -1193,11 +1195,15 @@ Every implementation slice must:
   - `GET /api/v1/artifacts`.
   - `GET /api/v1/artifacts/{artifactId}`.
   - Empty and populated catalog.
-  - Newest-first sorting.
+  - Sorting by `createdAt` descending with `id` ascending tie-breaks.
+  - Detail responses for stored artifacts before ready analysis exists.
   - Unknown artifact, corrupt metadata, and security rejection.
 - Out of scope:
   - Browser artifact UI, APK analysis execution, artifact deletion, install,
     reports, indexes, external services, and background jobs.
+  - Detail responses that include ready analysis metadata; `M5-S3` implements
+    analysis storage through `CAP-019`, and `M5-S5` verifies browser-visible
+    ready-analysis detail state.
 - Risks:
   - Returning absolute stored paths.
   - Catalog reads masking corrupt metadata as an empty list.
@@ -1207,9 +1213,11 @@ Every implementation slice must:
   - Required storage behavior conflicts with `CAP-018` or `CAP-020`.
 - Documentation synchronization: Update user-facing API/manual documentation if
   it exists; otherwise record `DOCS NOT REQUIRED` with reason.
-- Exit gate: `AC-020-001` through `AC-020-003` have green HTTP/filesystem
-  evidence, no host paths or token values leak, applicable broad checks pass or
-  have recorded blockers, and review passes.
+- Exit gate: `AC-020-001`, the pending/no-analysis portion of `AC-020-002`, and
+  `AC-020-003` have green HTTP/filesystem evidence, ready-analysis detail is
+  explicitly delegated to `M5-S3` and `M5-S5`, no host paths or token values
+  leak, applicable broad checks pass or have recorded blockers, and review
+  passes.
 - Completion evidence reference: `.codex/plans/current.md` and
   `.codex/cycles/history.md`.
 
@@ -1219,9 +1227,9 @@ Every implementation slice must:
 - Mode: feature
 - Purpose: Analyze one stored APK artifact locally with bounded fakeable
   `aapt dump badging` execution and persist the latest ready result.
-- Specification references: `CAP-019`, `AC-019-001`, `AC-019-002`,
-  `AC-019-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`,
-  `DATA-006`, `DATA-007`
+- Specification references: `CAP-019`, `CAP-020`, `AC-019-001`,
+  `AC-019-002`, `AC-019-003`, `AC-020-002`, `INV-SEC-001`,
+  `INV-SEC-003`, `INV-DATA-004`, `DATA-006`, `DATA-007`
 - Observable result: A same-origin HTTP client can request analysis for a
   stored artifact and observe parsed APK metadata, persisted ready analysis,
   documented failure states, and security rejection before host-tool execution.
@@ -1251,6 +1259,8 @@ Every implementation slice must:
   - Bounded `aapt dump badging STORED_APK_PATH` execution.
   - Parsing package metadata fields named by `CAP-019`.
   - Persisted ready analysis.
+  - Detail response includes the latest ready analysis after successful
+    analysis.
   - Unknown artifact, missing/failing/timed-out/malformed/oversized tool output,
     and security rejection.
 - Out of scope:
@@ -1267,10 +1277,11 @@ Every implementation slice must:
     mutation.
 - Documentation synchronization: Update user-facing API/manual documentation if
   it exists; otherwise record `DOCS NOT REQUIRED` with reason.
-- Exit gate: `AC-019-001` through `AC-019-003` have green HTTP/filesystem
-  evidence, only the allowed host-tool command is invoked, no false ready
-  analysis is stored, rejected security requests invoke no host tool,
-  applicable broad checks pass or have recorded blockers, and review passes.
+- Exit gate: `AC-019-001` through `AC-019-003` and the ready-analysis portion
+  of `AC-020-002` have green HTTP/filesystem evidence, only the allowed
+  host-tool command is invoked, no false ready analysis is stored, rejected
+  security requests invoke no host tool, applicable broad checks pass or have
+  recorded blockers, and review passes.
 - Completion evidence reference: `.codex/plans/current.md` and
   `.codex/cycles/history.md`.
 

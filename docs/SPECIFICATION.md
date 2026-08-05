@@ -2186,8 +2186,9 @@ may not exist. Requests use `GET /api/v1/artifacts`,
 `GET /api/v1/artifacts/{artifactId}`, and browser actions against those routes
 plus `CAP-018` and `CAP-019`.
 
-**Successful behavior:** The backend lists artifacts sorted newest first and
-returns one artifact's stored metadata and latest analysis when present. The
+**Successful behavior:** The backend lists artifacts sorted by `createdAt`
+descending, with `id` ascending as the tie-breaker when timestamps are equal,
+and returns one artifact's stored metadata and latest analysis when present. The
 browser renders upload, list, detail, pending, ready, and failure states using
 backend responses.
 
@@ -2226,8 +2227,9 @@ version.
 #### Acceptance Criteria
 
 - `AC-020-001`: Given zero or more stored artifacts, when the artifact catalog
-  is requested, then HTTP `200` returns sorted artifact items, count, and no
-  host paths or token values.
+  is requested, then HTTP `200` returns artifact items sorted by `createdAt`
+  descending with `id` ascending for equal timestamps, count, and no host paths
+  or token values.
 - `AC-020-002`: Given a known artifact with or without ready analysis, when
   detail is requested, then HTTP `200` returns artifact metadata and the latest
   analysis only when present.

@@ -1228,6 +1228,19 @@ type artifactUploadResponse struct {
 	Artifact artifactMetadata `json:"artifact"`
 }
 
+type artifactCatalogResponse struct {
+	Artifacts artifactCatalog `json:"artifacts"`
+}
+
+type artifactCatalog struct {
+	Items []artifactMetadata `json:"items"`
+	Count int                `json:"count"`
+}
+
+type artifactDetailResponse struct {
+	Artifact artifactMetadata `json:"artifact"`
+}
+
 type artifactMetadata struct {
 	ID             string `json:"id"`
 	OriginalName   string `json:"originalName"`
@@ -1448,11 +1461,21 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, dataDir s
 		writeAPIError(writer, http.StatusNotFound, "device_not_found", "Device not found")
 	})
 	mux.HandleFunc("/api/v1/artifacts", func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
+		switch request.Method {
+		case http.MethodGet:
+			handleArtifactCatalog(writer, dataDir)
+		case http.MethodPost:
+			handleArtifactUpload(writer, request, dataDir)
+		default:
+			writeUnknownRoute(writer)
+		}
+	})
+	mux.HandleFunc("/api/v1/artifacts/", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet {
 			writeUnknownRoute(writer)
 			return
 		}
-		handleArtifactUpload(writer, request, dataDir)
+		handleArtifactDetail(writer, request, dataDir)
 	})
 	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
 		writeUnknownRoute(writer)
@@ -1473,6 +1496,109 @@ type stagedArtifact struct {
 
 var errInvalidArtifactUpload = errors.New("invalid artifact upload")
 var errArtifactStorageUnavailable = errors.New("artifact storage unavailable")
+var errArtifactNotFound = errors.New("artifact not found")
+var errArtifactCatalogUnavailable = errors.New("artifact catalog unavailable")
+
+func handleArtifactCatalog(writer http.ResponseWriter, dataDir string) {
+	artifacts, err := readArtifactCatalog(dataDir)
+	if err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "artifact_catalog_unavailable", "Artifact catalog is unavailable")
+		return
+	}
+	if artifacts == nil {
+		artifacts = []artifactMetadata{}
+	}
+	writeJSON(writer, http.StatusOK, artifactCatalogResponse{
+		Artifacts: artifactCatalog{
+			Items: artifacts,
+			Count: len(artifacts),
+		},
+	})
+}
+
+func handleArtifactDetail(writer http.ResponseWriter, request *http.Request, dataDir string) {
+	idText := strings.TrimPrefix(request.URL.Path, "/api/v1/artifacts/")
+	id, err := url.PathUnescape(idText)
+	if err != nil || !validArtifactID(id) {
+		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
+		return
+	}
+	artifact, err := readArtifactMetadataFile(filepath.Join(dataDir, "artifacts", id, "metadata.json"))
+	if errors.Is(err, errArtifactNotFound) {
+		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "artifact_catalog_unavailable", "Artifact catalog is unavailable")
+		return
+	}
+	writeJSON(writer, http.StatusOK, artifactDetailResponse{Artifact: artifact})
+}
+
+func readArtifactCatalog(dataDir string) ([]artifactMetadata, error) {
+	artifactsDir := filepath.Join(dataDir, "artifacts")
+	entries, err := os.ReadDir(artifactsDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errArtifactCatalogUnavailable
+	}
+
+	artifacts := make([]artifactMetadata, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return nil, errArtifactCatalogUnavailable
+		}
+		artifact, err := readArtifactMetadataFile(filepath.Join(artifactsDir, entry.Name(), "metadata.json"))
+		if err != nil {
+			return nil, errArtifactCatalogUnavailable
+		}
+		artifacts = append(artifacts, artifact)
+	}
+	sort.Slice(artifacts, func(i, j int) bool {
+		if artifacts[i].CreatedAt != artifacts[j].CreatedAt {
+			return artifacts[i].CreatedAt > artifacts[j].CreatedAt
+		}
+		return artifacts[i].ID < artifacts[j].ID
+	})
+	return artifacts, nil
+}
+
+func readArtifactMetadataFile(path string) (artifactMetadata, error) {
+	content, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return artifactMetadata{}, errArtifactNotFound
+	}
+	if err != nil {
+		return artifactMetadata{}, errArtifactCatalogUnavailable
+	}
+	var stored artifactUploadResponse
+	if err := json.Unmarshal(content, &stored); err != nil {
+		return artifactMetadata{}, errArtifactCatalogUnavailable
+	}
+	if !validArtifactMetadata(stored.Artifact) {
+		return artifactMetadata{}, errArtifactCatalogUnavailable
+	}
+	return stored.Artifact, nil
+}
+
+func validArtifactMetadata(artifact artifactMetadata) bool {
+	if !validArtifactID(artifact.ID) ||
+		artifact.OriginalName == "" ||
+		artifact.SizeBytes <= 0 ||
+		artifact.SHA256 == "" ||
+		artifact.CreatedAt == "" ||
+		artifact.AnalysisStatus == "" {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339, artifact.CreatedAt)
+	return err == nil
+}
+
+func validArtifactID(id string) bool {
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, `/\`)
+}
 
 func handleArtifactUpload(writer http.ResponseWriter, request *http.Request, dataDir string) {
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))

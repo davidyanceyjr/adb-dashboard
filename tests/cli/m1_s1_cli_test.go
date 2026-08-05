@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -3790,6 +3791,99 @@ func TestM5S1ArtifactUploadAPI(t *testing.T) {
 	})
 }
 
+func TestM5S2ArtifactCatalogAndDetailAPI(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+	defer server.cleanup(t)
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+
+	empty := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts"})
+	if empty.statusCode != http.StatusOK {
+		t.Fatalf("empty catalog status = %d, want 200; body = %s", empty.statusCode, empty.body)
+	}
+	assertArtifactCatalogJSON(t, empty.body, nil)
+
+	var artifacts []artifactUploadAssertion
+	for _, name := range []string{"alpha.apk", "bravo.apk", "charlie.apk"} {
+		apk := apkLikeZip(t)
+		wantSHA := sha256.Sum256(apk)
+		response := requestArtifactUpload(t, baseURL, name, "application/vnd.android.package-archive", apk, map[string]string{
+			"Origin": baseURL,
+		})
+		if response.statusCode != http.StatusCreated {
+			t.Fatalf("upload %s status = %d, want 201; body = %s", name, response.statusCode, response.body)
+		}
+		artifacts = append(artifacts, assertArtifactUploadJSON(t, response.body, name, len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive"))
+	}
+	artifacts[0].CreatedAt = "2026-08-04T11:00:00Z"
+	artifacts[1].CreatedAt = "2026-08-04T12:00:00Z"
+	artifacts[2].CreatedAt = "2026-08-04T11:00:00Z"
+	for _, artifact := range artifacts {
+		writeArtifactMetadataFile(t, filepath.Join(dataDir, "artifacts", artifact.ID, "metadata.json"), artifact)
+	}
+	expectedCatalog := append([]artifactUploadAssertion(nil), artifacts...)
+	sortArtifactAssertions(expectedCatalog)
+
+	catalog := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts"})
+	if catalog.statusCode != http.StatusOK {
+		t.Fatalf("catalog status = %d, want 200; body = %s", catalog.statusCode, catalog.body)
+	}
+	assertArtifactCatalogJSON(t, catalog.body, expectedCatalog)
+	assertArtifactResponseNoHostPaths(t, catalog.body, values, dataDir)
+
+	detail := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifacts[0].ID)})
+	if detail.statusCode != http.StatusOK {
+		t.Fatalf("detail status = %d, want 200; body = %s", detail.statusCode, detail.body)
+	}
+	assertArtifactDetailJSON(t, detail.body, artifacts[0], false)
+	assertArtifactResponseNoHostPaths(t, detail.body, values, dataDir)
+
+	unknown := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/unknown-artifact"})
+	if unknown.statusCode != http.StatusNotFound {
+		t.Fatalf("unknown detail status = %d, want 404; body = %s", unknown.statusCode, unknown.body)
+	}
+	assertAPIErrorEnvelope(t, unknown.body, "artifact_not_found")
+
+	for _, test := range []struct {
+		name    string
+		request httpRequestSpec
+		code    string
+	}{
+		{name: "catalog_foreign_host", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts", host: "foreign.example"}, code: "forbidden_host"},
+		{name: "detail_foreign_origin", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifacts[0].ID), headers: map[string]string{"Origin": "http://foreign.example"}}, code: "forbidden_origin"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := requestJSON(t, test.request)
+			if response.statusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+			}
+			assertSecurityErrorEnvelope(t, response.body, test.code)
+		})
+	}
+
+	corruptPath := filepath.Join(dataDir, "artifacts", artifacts[1].ID, "metadata.json")
+	if err := os.WriteFile(corruptPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corruptCatalog := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts"})
+	if corruptCatalog.statusCode != http.StatusInternalServerError {
+		t.Fatalf("corrupt catalog status = %d, want 500; body = %s", corruptCatalog.statusCode, corruptCatalog.body)
+	}
+	assertAPIErrorEnvelope(t, corruptCatalog.body, "artifact_catalog_unavailable")
+	corruptDetail := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifacts[1].ID)})
+	if corruptDetail.statusCode != http.StatusInternalServerError {
+		t.Fatalf("corrupt detail status = %d, want 500; body = %s", corruptDetail.statusCode, corruptDetail.body)
+	}
+	assertAPIErrorEnvelope(t, corruptDetail.body, "artifact_catalog_unavailable")
+
+	assertPathAbsent(t, values["ADB_MARKER"])
+	assertPathAbsent(t, values["BROWSER_MARKER"])
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -5220,6 +5314,107 @@ func assertArtifactMetadataFile(t *testing.T, path string, want artifactUploadAs
 	}
 }
 
+func writeArtifactMetadataFile(t *testing.T, path string, artifact artifactUploadAssertion) {
+	t.Helper()
+
+	var body bytes.Buffer
+	encoder := json.NewEncoder(&body)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(struct {
+		Artifact artifactUploadAssertion `json:"artifact"`
+	}{Artifact: artifact}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body.Bytes(), 0o600); err != nil {
+		t.Fatalf("write metadata %s: %v", path, err)
+	}
+}
+
+func sortArtifactAssertions(artifacts []artifactUploadAssertion) {
+	sort.Slice(artifacts, func(i, j int) bool {
+		if artifacts[i].CreatedAt != artifacts[j].CreatedAt {
+			return artifacts[i].CreatedAt > artifacts[j].CreatedAt
+		}
+		return artifacts[i].ID < artifacts[j].ID
+	})
+}
+
+func assertArtifactCatalogJSON(t *testing.T, body []byte, want []artifactUploadAssertion) {
+	t.Helper()
+
+	var got struct {
+		Artifacts struct {
+			Items []artifactUploadAssertion `json:"items"`
+			Count int                       `json:"count"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal artifact catalog JSON: %v\nbody: %s", err, body)
+	}
+	if len(got.Artifacts.Items) != len(want) {
+		t.Fatalf("catalog item count = %d, want %d; body = %s", len(got.Artifacts.Items), len(want), body)
+	}
+	if got.Artifacts.Count != len(want) {
+		t.Fatalf("catalog count = %d, want %d; body = %s", got.Artifacts.Count, len(want), body)
+	}
+	for index, artifact := range got.Artifacts.Items {
+		assertArtifactEqual(t, artifact, want[index], body)
+	}
+}
+
+func assertArtifactDetailJSON(t *testing.T, body []byte, want artifactUploadAssertion, wantAnalysis bool) {
+	t.Helper()
+
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal artifact detail JSON: %v\nbody: %s", err, body)
+	}
+	if wantAnalysis {
+		assertKeys(t, rawMessageKeys(got), "artifact", "analysis")
+	} else {
+		assertKeys(t, rawMessageKeys(got), "artifact")
+	}
+	var artifact artifactUploadAssertion
+	if err := json.Unmarshal(got["artifact"], &artifact); err != nil {
+		t.Fatalf("unmarshal detail artifact JSON: %v\nbody: %s", err, body)
+	}
+	assertArtifactEqual(t, artifact, want, body)
+}
+
+func rawMessageKeys(values map[string]json.RawMessage) map[string]any {
+	keys := make(map[string]any, len(values))
+	for key := range values {
+		keys[key] = nil
+	}
+	return keys
+}
+
+func assertArtifactEqual(t *testing.T, got, want artifactUploadAssertion, body []byte) {
+	t.Helper()
+
+	if got != want {
+		t.Fatalf("artifact = %#v, want %#v; body = %s", got, want, body)
+	}
+}
+
+func assertArtifactResponseNoHostPaths(t *testing.T, body []byte, values map[string]string, dataDir string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		values["HOME"],
+		values["XDG_STATE_HOME"],
+		dataDir,
+		"ADB_DASHBOARD",
+		"secret",
+		"original.apk",
+		"metadata.json",
+	} {
+		if forbidden != "" && strings.Contains(string(body), forbidden) {
+			t.Fatalf("artifact response contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+}
+
 func assertFileBytes(t *testing.T, path string, want []byte) {
 	t.Helper()
 
@@ -5297,6 +5492,10 @@ func apiErrorMessage(code string) string {
 		return "Unsupported artifact media type"
 	case "artifact_storage_unavailable":
 		return "Artifact storage is unavailable"
+	case "artifact_not_found":
+		return "Artifact not found"
+	case "artifact_catalog_unavailable":
+		return "Artifact catalog is unavailable"
 	default:
 		return ""
 	}

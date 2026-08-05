@@ -800,6 +800,45 @@ Expected result:
 - Error code is `forbidden_origin`.
 - No request body is stored and no artifact metadata is created.
 
+## Artifact Catalog And Detail API
+
+After uploading one or more artifacts with the previous section, request the
+catalog and detail API:
+
+```sh
+curl -i -sS "http://$ADDR/api/v1/artifacts"
+curl -i -sS "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID"
+```
+
+Expected result:
+
+- The catalog returns HTTP `200` with `artifacts.items` and
+  `artifacts.count`.
+- Catalog items are sorted by `createdAt` descending, with `id` ascending when
+  timestamps are equal.
+- Detail returns HTTP `200` with `artifact` metadata and no `analysis` field
+  until a ready analysis exists.
+- Responses do not expose stored host paths, `original.apk`, or
+  `metadata.json`.
+- No ADB command runs, no APK is installed, and no browser is opened.
+
+Check catalog and detail negative behavior:
+
+```sh
+curl -i -sS "http://$ADDR/api/v1/artifacts/unknown-artifact"
+curl -i -sS -H "Host: foreign.example" "http://$ADDR/api/v1/artifacts"
+curl -i -sS -H "Origin: http://foreign.example" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID"
+```
+
+Expected result:
+
+- Unknown artifact detail returns HTTP `404` with code `artifact_not_found`.
+- Rejected Host requests return HTTP `403` with code `forbidden_host`.
+- Rejected Origin requests return HTTP `403` with code `forbidden_origin`.
+- Corrupt stored metadata returns HTTP `500` with code
+  `artifact_catalog_unavailable` for catalog or detail requests.
+
 ## Shutdown
 
 Stop the server terminal with `Ctrl-C`.
