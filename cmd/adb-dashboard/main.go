@@ -2495,7 +2495,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
       <dt>storage</dt><dd id="storage-status">storage: unavailable</dd>
       <dt>host tools</dt><dd id="host-tools-status">host tools: unavailable</dd>
-      <dt>artifacts</dt><dd><span id="artifacts-status">artifacts: unavailable</span><div class="controls"><input type="file" id="artifact-upload-input" accept=".apk,application/vnd.android.package-archive"><button type="button" id="artifact-upload-submit">upload</button><button type="button" id="artifact-refresh">refresh</button><button type="button" id="artifact-detail-first">details</button></div><div id="artifact-upload-status" class="device-detail">upload: unavailable</div><div id="artifacts-list" class="artifact-list"></div><div id="artifact-detail" class="device-detail">artifact detail: unavailable</div></dd>
+      <dt>artifacts</dt><dd><span id="artifacts-status">artifacts: unavailable</span><div class="controls"><input type="file" id="artifact-upload-input" accept=".apk,application/vnd.android.package-archive"><button type="button" id="artifact-upload-submit">upload</button><button type="button" id="artifact-refresh">refresh</button><button type="button" id="artifact-detail-first">details</button><button type="button" id="artifact-analyze-first">analyze</button></div><div id="artifact-upload-status" class="device-detail">upload: unavailable</div><div id="artifact-analysis-status" class="device-detail">analysis: unavailable</div><div id="artifacts-list" class="artifact-list"></div><div id="artifact-detail" class="device-detail">artifact detail: unavailable</div></dd>
     </dl>
   </main>
   <script>
@@ -2521,6 +2521,7 @@ const dashboardShellHTML = `<!doctype html>
   let latestPackageScope = "all";
   let latestArtifacts = [];
   let refreshSequence = 0;
+  let packageSequence = 0;
   let packageDetailSequence = 0;
   let artifactSequence = 0;
 
@@ -2587,7 +2588,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("artifact-detail", "artifact detail: unavailable");
   };
 
-  const renderArtifactDetail = (artifact) => {
+  const renderArtifactDetail = (artifact, analysis) => {
     const lines = [
       "artifact detail: " + String(artifact.originalName || ""),
       "size: " + String(artifact.sizeBytes || 0),
@@ -2596,6 +2597,33 @@ const dashboardShellHTML = `<!doctype html>
       lines.push("sha256: " + String(artifact.sha256));
     }
     lines.push("analysis: " + String(artifact.analysisStatus || "pending"));
+    if (analysis) {
+      if (analysis.packageName) {
+        lines.push("packageName: " + String(analysis.packageName));
+      }
+      if (analysis.versionName) {
+        lines.push("versionName: " + String(analysis.versionName));
+      }
+      if (analysis.versionCode) {
+        lines.push("versionCode: " + String(analysis.versionCode));
+      }
+      if (analysis.minSdkVersion) {
+        lines.push("minSdkVersion: " + String(analysis.minSdkVersion));
+      }
+      if (analysis.targetSdkVersion) {
+        lines.push("targetSdkVersion: " + String(analysis.targetSdkVersion));
+      }
+      if (analysis.applicationLabel) {
+        lines.push("applicationLabel: " + String(analysis.applicationLabel));
+      }
+      if (analysis.launchableActivity) {
+        lines.push("launchableActivity: " + String(analysis.launchableActivity));
+      }
+      const warnings = Array.isArray(analysis.warnings) ? analysis.warnings : [];
+      for (const warning of warnings) {
+        lines.push("warning: " + String(warning));
+      }
+    }
     setText("artifact-detail", lines.join("\n"));
   };
 
@@ -2614,6 +2642,7 @@ const dashboardShellHTML = `<!doctype html>
       }
       setText("artifacts-status", "artifacts: " + String(items.length));
       setText("artifact-detail", "artifact detail: unavailable");
+      setText("artifact-analysis-status", "analysis: unavailable");
       if (items.length === 0) {
         clearArtifactRows();
         setText("artifacts-list", "empty");
@@ -2661,7 +2690,42 @@ const dashboardShellHTML = `<!doctype html>
       setText("artifact-detail", "artifact detail: unavailable");
       return;
     }
-    renderArtifactDetail(artifact);
+    try {
+      const detailResponse = await fetch("/api/v1/artifacts/" + encodeURIComponent(artifact.id), { credentials: "same-origin" });
+      if (!detailResponse.ok) {
+        throw new Error("artifact detail unavailable");
+      }
+      const payload = await detailResponse.json();
+      renderArtifactDetail(payload.artifact || artifact, payload.analysis || null);
+    } catch (_) {
+      setText("artifact-detail", "artifact detail: unavailable");
+    }
+  };
+
+  const analyzeFirstArtifact = async () => {
+    const artifact = latestArtifacts[0];
+    if (!artifact || !artifact.id) {
+      setText("artifact-analysis-status", "analysis: unavailable");
+      return;
+    }
+    setText("artifact-analysis-status", "analysis: loading");
+    try {
+      const response = await fetch("/api/v1/artifacts/" + encodeURIComponent(artifact.id) + "/analyze", {
+        method: "POST",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error("artifact analysis unavailable");
+      }
+      const payload = await response.json();
+      const analyzedArtifact = payload.artifact || artifact;
+      latestArtifacts = latestArtifacts.map((item) => String(item.id || "") === String(analyzedArtifact.id || "") ? analyzedArtifact : item);
+      renderArtifactRows(latestArtifacts);
+      renderArtifactDetail(analyzedArtifact, payload.analysis || null);
+      setText("artifact-analysis-status", "analysis: " + String(analyzedArtifact.analysisStatus || "ready"));
+    } catch (_) {
+      setText("artifact-analysis-status", "analysis: unavailable");
+    }
   };
 
   const renderPackageRows = (items) => {
@@ -2718,6 +2782,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("storage-status", "storage: unavailable");
     setText("host-tools-status", "host tools: unavailable");
     setText("artifact-upload-status", "upload: unavailable");
+    setText("artifact-analysis-status", "analysis: unavailable");
     artifactsUnavailable();
   };
 
@@ -2859,20 +2924,27 @@ const dashboardShellHTML = `<!doctype html>
     const device = latestDevices[0];
     latestPackageScope = scope || latestPackageScope || "all";
     if (!device || !device.serial) {
+      packageSequence++;
       setText("device-packages", "packages: unavailable");
       clearPackageRows();
       clearPackageDetail();
       return;
     }
+    const selectedSerial = String(device.serial || "");
+    const sequence = ++packageSequence;
     setText("device-packages", "packages: loading");
     clearPackageRows();
     clearPackageDetail();
     try {
-      const packagesResponse = await fetch("/api/v1/devices/" + encodeURIComponent(device.serial) + "/packages?scope=" + encodeURIComponent(latestPackageScope), { credentials: "same-origin" });
+      const packagesResponse = await fetch("/api/v1/devices/" + encodeURIComponent(selectedSerial) + "/packages?scope=" + encodeURIComponent(latestPackageScope), { credentials: "same-origin" });
       if (!packagesResponse.ok) {
         throw new Error("packages unavailable");
       }
       const payload = await packagesResponse.json();
+      const currentDevice = latestDevices[0];
+      if (sequence !== packageSequence || !currentDevice || String(currentDevice.serial || "") !== selectedSerial) {
+        return;
+      }
       const packages = payload.packages || {};
       const currentScope = String(packages.scope || latestPackageScope);
       const items = Array.isArray(packages.items) ? packages.items : [];
@@ -2883,9 +2955,11 @@ const dashboardShellHTML = `<!doctype html>
       }
       renderPackageRows(items);
     } catch (_) {
-      setText("device-packages", "packages: unavailable");
-      clearPackageRows();
-      clearPackageDetail();
+      if (sequence === packageSequence) {
+        setText("device-packages", "packages: unavailable");
+        clearPackageRows();
+        clearPackageDetail();
+      }
     }
   };
 
@@ -3026,6 +3100,10 @@ const dashboardShellHTML = `<!doctype html>
     const artifactDetail = document.getElementById("artifact-detail-first");
     if (artifactDetail) {
       artifactDetail.addEventListener("click", loadFirstArtifactDetail);
+    }
+    const artifactAnalyze = document.getElementById("artifact-analyze-first");
+    if (artifactAnalyze) {
+      artifactAnalyze.addEventListener("click", analyzeFirstArtifact);
     }
     loadStatus();
   });

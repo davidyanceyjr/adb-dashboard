@@ -3,12 +3,12 @@
 ## Scope
 
 These steps exercise the current implementation level through
-`M5-S3`: local CLI behavior, configuration and startup checks, loopback server
+`M5-S5`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
 read-only package inventory API/browser behavior plus package detail API
-behavior and local APK artifact upload, catalog, detail, and analysis API
-behavior.
+behavior and local APK artifact upload, catalog, detail, analysis API, and
+browser analysis behavior.
 
 ## Requirements
 
@@ -722,8 +722,15 @@ Expected result:
   artifact row or detail.
 - If the catalog cannot be read, artifact status shows
   `artifacts: unavailable` and stale catalog/detail text is cleared.
+- Clicking artifact `analyze` shows an analysis loading state, then either
+  `analysis: ready` with parsed package metadata derived from the backend
+  analysis response or `analysis: unavailable` when local analysis fails.
+- Clicking artifact `details` after successful analysis shows the persisted
+  ready analysis metadata from the artifact detail API.
+- Restarting the server with the same `$DATA_DIR` preserves ready analysis
+  detail state.
 - No browser artifact control installs an APK, mutates a device, runs shell
-  commands, triggers analysis, deletes artifacts, or exposes stored host paths.
+  commands, deletes artifacts, or exposes stored host paths.
 
 ## Non-Ready Device Observation
 

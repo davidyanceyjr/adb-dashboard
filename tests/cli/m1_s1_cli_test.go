@@ -4068,7 +4068,7 @@ func TestM5S4BrowserArtifactUploadAndCatalog(t *testing.T) {
 				content:        apk,
 				afterMS:        350,
 			},
-			{id: "artifact-detail-first", afterMS: 2500},
+			{id: "artifact-detail-first", afterMS: 3500},
 		})
 		for _, want := range []string{
 			"artifact-upload-status=upload: browser-upload.apk",
@@ -4098,7 +4098,7 @@ func TestM5S4BrowserArtifactUploadAndCatalog(t *testing.T) {
 		secondBaseURL := "http://" + secondAddr
 		_, _, secondBody := httpGet(t, secondBaseURL+"/")
 		persisted := runFrontendScriptWithActions(t, extractInlineScript(t, string(secondBody)), secondBaseURL, []frontendAction{
-			{id: "artifact-detail-first", afterMS: 2200},
+			{id: "artifact-detail-first", afterMS: 3500},
 		})
 		for _, want := range []string{
 			"artifacts-status=artifacts: 1",
@@ -4164,6 +4164,164 @@ func TestM5S4BrowserArtifactUploadAndCatalog(t *testing.T) {
 				t.Fatalf("catalog failure rendered stale or sensitive text %q:\n%s", forbidden, corrupt)
 			}
 		}
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+}
+
+func TestM5S5BrowserArtifactAnalysisView(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("triggers_analysis_renders_ready_metadata_and_persists_detail", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		aaptMarker := filepath.Join(values["TMPDIR"], "browser-aapt-invoked")
+		env = append(env, "AAPT_MARKER="+aaptMarker)
+		writeFakeAAPT(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+if [ "$1" != "dump" ] || [ "$2" != "badging" ]; then
+  printf 'unexpected argv\n' >&2
+  exit 7
+fi
+printf "package: name='com.example.ready' versionCode='42' versionName='1.2.3'\n"
+printf "sdkVersion:'23'\n"
+printf "targetSdkVersion:'35'\n"
+printf "application-label:'Example App'\n"
+printf "launchable-activity: name='com.example.ready.MainActivity'\n"
+printf "WARNING: duplicate resource\n"
+`)
+
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		html := string(body)
+		assertM5S5BrowserShellOmitsUnsupportedArtifactControls(t, html)
+		script := extractInlineScript(t, html)
+
+		apk := apkLikeZip(t)
+		analyzed := runFrontendScriptWithActions(t, script, baseURL, []frontendAction{
+			{
+				uploadInputID:  "artifact-upload-input",
+				uploadButtonID: "artifact-upload-submit",
+				fileName:       "browser-analysis.apk",
+				contentType:    "application/vnd.android.package-archive",
+				content:        apk,
+				afterMS:        350,
+			},
+			{id: "artifact-analyze-first", afterMS: 2500},
+			{id: "artifact-detail-first", afterMS: 3800},
+		})
+		for _, want := range []string{
+			"artifact-analysis-status=analysis: ready",
+			"artifact-detail=artifact detail: browser-analysis.apk",
+			"analysis: ready",
+			"packageName: com.example.ready",
+			"versionName: 1.2.3",
+			"versionCode: 42",
+			"minSdkVersion: 23",
+			"targetSdkVersion: 35",
+			"applicationLabel: Example App",
+			"launchableActivity: com.example.ready.MainActivity",
+			"warning: WARNING: duplicate resource",
+		} {
+			if !strings.Contains(analyzed, want) {
+				t.Fatalf("analyzed artifact shell missing %q\nrendered:\n%s", want, analyzed)
+			}
+		}
+		assertArtifactAnalysisBrowserOutputOmitsHostAndUnsupportedText(t, analyzed, values, dataDir)
+
+		catalog := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts"})
+		if catalog.statusCode != http.StatusOK {
+			t.Fatalf("catalog status = %d, want 200; body = %s", catalog.statusCode, catalog.body)
+		}
+		var payload struct {
+			Artifacts struct {
+				Items []artifactUploadAssertion `json:"items"`
+			} `json:"artifacts"`
+		}
+		if err := json.Unmarshal(catalog.body, &payload); err != nil {
+			t.Fatalf("unmarshal catalog JSON: %v\nbody: %s", err, catalog.body)
+		}
+		if len(payload.Artifacts.Items) != 1 {
+			t.Fatalf("catalog items = %d, want 1; body = %s", len(payload.Artifacts.Items), catalog.body)
+		}
+		assertFileContains(t, aaptMarker, "dump badging "+filepath.Join(dataDir, "artifacts", payload.Artifacts.Items[0].ID, "original.apk")+"\n")
+
+		server.signal(t, syscall.SIGTERM)
+		result := server.wait(t)
+		if result.code != 0 {
+			t.Fatalf("first server exit status = %d, want 0; stderr = %q", result.code, result.stderr)
+		}
+
+		restarted := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer restarted.cleanup(t)
+		restartedAddr := serverAddressFromStartLine(t, restarted.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		restartedBaseURL := "http://" + restartedAddr
+		_, _, restartedBody := httpGet(t, restartedBaseURL+"/")
+		persisted := runFrontendScriptWithActions(t, extractInlineScript(t, string(restartedBody)), restartedBaseURL, []frontendAction{
+			{id: "artifact-detail-first", afterMS: 3500},
+		})
+		for _, want := range []string{
+			"artifacts-status=artifacts: 1",
+			"artifact-detail=artifact detail: browser-analysis.apk",
+			"analysis: ready",
+			"packageName: com.example.ready",
+			"versionName: 1.2.3",
+		} {
+			if !strings.Contains(persisted, want) {
+				t.Fatalf("persisted analysis shell missing %q\nrendered:\n%s", want, persisted)
+			}
+		}
+		assertArtifactAnalysisBrowserOutputOmitsHostAndUnsupportedText(t, persisted, values, dataDir)
+	})
+
+	t.Run("renders_analysis_failure_without_false_ready_metadata", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		aaptMarker := filepath.Join(values["TMPDIR"], "browser-aapt-failed")
+		env = append(env, "AAPT_MARKER="+aaptMarker)
+		writeFakeAAPT(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+printf 'host path /tmp/secret/original.apk token=secret' >&2
+exit 9
+`)
+
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer server.cleanup(t)
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		script := extractInlineScript(t, string(body))
+
+		failed := runFrontendScriptWithActions(t, script, baseURL, []frontendAction{
+			{
+				uploadInputID:  "artifact-upload-input",
+				uploadButtonID: "artifact-upload-submit",
+				fileName:       "browser-analysis-fails.apk",
+				contentType:    "application/vnd.android.package-archive",
+				content:        apkLikeZip(t),
+				afterMS:        350,
+			},
+			{id: "artifact-analyze-first", afterMS: 2500},
+			{id: "artifact-detail-first", afterMS: 3800},
+		})
+		if !strings.Contains(failed, "artifact-analysis-status=analysis: unavailable") {
+			t.Fatalf("analysis failure state missing\nrendered:\n%s", failed)
+		}
+		for _, forbidden := range []string{
+			"packageName: com.example.ready",
+			"analysis: ready",
+			"host path",
+			"token=secret",
+			"/tmp/secret",
+		} {
+			if strings.Contains(failed, forbidden) {
+				t.Fatalf("analysis failure rendered false ready or sensitive text %q:\n%s", forbidden, failed)
+			}
+		}
+		assertArtifactAnalysisBrowserOutputOmitsHostAndUnsupportedText(t, failed, values, dataDir)
 		assertPathAbsent(t, values["BROWSER_MARKER"])
 	})
 }
@@ -4668,6 +4826,9 @@ function makeElement(initialID = "") {
       return child;
     },
     replaceChildren: (...children) => {
+      for (const child of target.children) {
+        unregisterElement(child);
+      }
       target.children = children;
       target.textContent = target.children.map((item) => item.textContent || "").join("\n");
     },
@@ -4683,6 +4844,9 @@ function makeElement(initialID = "") {
   Object.defineProperty(target, "id", {
     get: () => target._id,
     set: (value) => {
+      if (target._id && elements[target._id] === target) {
+        delete elements[target._id];
+      }
       target._id = String(value);
       if (target._id) {
         elements[target._id] = target;
@@ -4693,6 +4857,17 @@ function makeElement(initialID = "") {
     target.id = initialID;
   }
   return target;
+}
+function unregisterElement(target) {
+  if (!target) {
+    return;
+  }
+  if (target.id && elements[target.id] === target) {
+    delete elements[target.id];
+  }
+  for (const child of target.children || []) {
+    unregisterElement(child);
+  }
 }
 function element(id) {
   if (!elements[id]) {
@@ -4861,7 +5036,6 @@ func assertM5S4BrowserShellOmitsUnsupportedArtifactControls(t *testing.T, text s
 		"install artifact",
 		"install apk",
 		"delete",
-		"analyze",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
@@ -4885,13 +5059,63 @@ func assertArtifactBrowserOutputOmitsHostAndUnsupportedText(t *testing.T, text s
 		"install artifact",
 		"install apk",
 		"delete",
-		"analyze",
 		"shell",
 		"reboot",
 		"uninstall",
 	} {
 		if forbidden != "" && strings.Contains(text, forbidden) {
 			t.Fatalf("artifact browser output contains forbidden text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func assertM5S5BrowserShellOmitsUnsupportedArtifactControls(t *testing.T, text string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"csrfToken",
+		"webSocketToken",
+		"raw command",
+		"transfers",
+		"reboot",
+		"uninstall",
+		"force-stop",
+		"disable",
+		"enable",
+		"pull",
+		"shell",
+		"install artifact",
+		"install apk",
+		"delete",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func assertArtifactAnalysisBrowserOutputOmitsHostAndUnsupportedText(t *testing.T, text string, values map[string]string, dataDir string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		values["HOME"],
+		values["XDG_STATE_HOME"],
+		dataDir,
+		"csrfToken",
+		"webSocketToken",
+		"ADB_DASHBOARD",
+		"secret",
+		"original.apk",
+		"metadata.json",
+		"install artifact",
+		"install apk",
+		"delete",
+		"shell",
+		"reboot",
+		"uninstall",
+	} {
+		if forbidden != "" && strings.Contains(text, forbidden) {
+			t.Fatalf("artifact analysis browser output contains forbidden text %q:\n%s", forbidden, text)
 		}
 	}
 }
