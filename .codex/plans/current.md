@@ -6,7 +6,7 @@
 - Last roadmap slice: M5-S3: Artifact Analysis API
 - Last result: committed
 - Last final phase: committed
-- Last commit: `4abc4ca5fbcb254d72e7114f66c38e9e899135aa`
+- Last commit: `4abc4caf2ef0f729d9decf32201fc40ef34a9496`
 - Next eligible slice: M5-S4
 - Blocker: none
 
