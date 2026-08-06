@@ -4,9 +4,9 @@ Status: inactive
 Last cycle ID: CYCLE-20260806-M5-S6
 Last mode: feature
 Last roadmap slice: M5-S6: Explicit Artifact Deletion
-Last result: ready
-Last final phase: ready
-Last commit: not committed
+Last result: committed
+Last final phase: committed
+Last commit: `45207919bccf0aa33af6fc7599c902c5c68464f8`
 Next eligible slice: none recorded
 
 Cycle ID: CYCLE-20260806-M5-S6
@@ -23,7 +23,7 @@ Focused test command: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cach
 Real-path command or procedure: Build the real binary, start `serve --listen 127.0.0.1:0 --data-dir <isolated> --no-open`, upload disposable APK artifacts, delete through API and browser, inspect catalog/detail responses and filesystem side effects, repeat invalid ID, unknown ID, symlink/path escape, and rejected Host/Origin cases.
 Broad verification commands: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`; `git diff --check`
 Current gate: Review
-Current phase: ready
+Current phase: committed
 Blocker: none
 Next phase: none
 
@@ -139,9 +139,19 @@ Phase: ready
 Result: CYCLE READY
 Evidence:
 - M5-S6 passed review with focused, real-path, negative-path, documentation, and broad-check evidence.
-- Commit not created because the user did not authorize committing this cycle.
+- Implementation commit created after user authorization: `45207919bccf0aa33af6fc7599c902c5c68464f8`.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
-Next: commit only if authorized
+Next: committed
+Blocker: none
+
+Phase: committed
+Result: COMMITTED
+Evidence:
+- `git commit -m "Add explicit artifact deletion"` created commit `45207919bccf0aa33af6fc7599c902c5c68464f8`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: push
 Blocker: none
