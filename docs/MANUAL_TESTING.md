@@ -3,12 +3,12 @@
 ## Scope
 
 These steps exercise the current implementation level through
-`M5-S5`: local CLI behavior, configuration and startup checks, loopback server
+`M5-S6`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
 read-only package inventory API/browser behavior plus package detail API
 behavior and local APK artifact upload, catalog, detail, analysis API, and
-browser analysis behavior.
+browser analysis and deletion behavior.
 
 ## Requirements
 
@@ -616,10 +616,9 @@ Expected result:
 - Future areas such as watcher, jobs, sessions, storage, and host tools show
   `NIY`.
 - No bootstrap token values are visible.
-- Artifact upload, refresh, and detail controls are visible.
+- Artifact upload, refresh, detail, analyze, and delete controls are visible.
 - No unsupported controls for shell, install, uninstall, transfer, reboot,
-  jobs, sessions, artifact analysis, artifact deletion, screen recording, or
-  settings appear.
+  jobs, sessions, screen recording, or settings appear.
 
 Click `refresh`.
 
@@ -729,8 +728,12 @@ Expected result:
   ready analysis metadata from the artifact detail API.
 - Restarting the server with the same `$DATA_DIR` preserves ready analysis
   detail state.
+- Clicking artifact `delete` shows a delete loading state and then
+  `delete: deleted`; the catalog refreshes to omit the deleted artifact, stale
+  detail and analysis text are cleared, and the artifact directory is removed
+  from `$DATA_DIR/artifacts`.
 - No browser artifact control installs an APK, mutates a device, runs shell
-  commands, deletes artifacts, or exposes stored host paths.
+  commands, or exposes stored host paths.
 
 ## Non-Ready Device Observation
 
@@ -916,6 +919,56 @@ Expected result:
 - Failed analysis does not replace a prior ready analysis and does not store a
   false ready result.
 - Rejected Host or Origin requests return HTTP `403` before `aapt` is invoked.
+
+## Artifact Deletion API
+
+After uploading an artifact, delete it explicitly:
+
+```sh
+curl -i -sS -X DELETE -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID"
+
+curl -i -sS "http://$ADDR/api/v1/artifacts"
+curl -i -sS "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID"
+```
+
+Expected result:
+
+- Deletion returns HTTP `200` with `artifact.id` equal to `$ARTIFACT_ID` and
+  `deleted` equal to `true`.
+- The deleted artifact is absent from the catalog response.
+- Detail for the deleted artifact returns HTTP `404` with code
+  `artifact_not_found`.
+- `$DATA_DIR/artifacts/ARTIFACT_ID` no longer exists.
+- Other artifact directories under `$DATA_DIR/artifacts` remain present.
+- Responses do not expose stored host paths, `original.apk`, `metadata.json`,
+  environment values, or token values.
+
+Check deletion negative behavior:
+
+```sh
+curl -i -sS -X DELETE -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/"
+
+curl -i -sS -X DELETE -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/unknown-artifact"
+
+curl -i -sS -X DELETE -H "Host: foreign.example" \
+  "http://$ADDR/api/v1/artifacts/$OTHER_ARTIFACT_ID"
+```
+
+Expected result:
+
+- Invalid artifact ID syntax returns HTTP `400` with code
+  `invalid_artifact_request`.
+- Unknown or already-deleted artifact IDs return HTTP `404` with code
+  `artifact_not_found`.
+- Filesystem deletion failure returns HTTP `500` with code
+  `artifact_delete_failed`.
+- Rejected Host or Origin requests return HTTP `403` before any artifact
+  directory is removed.
+- Deletion must not remove unrelated files or follow symlinks out of artifact
+  storage.
 
 ## Shutdown
 

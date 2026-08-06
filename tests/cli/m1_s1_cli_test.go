@@ -4326,6 +4326,189 @@ exit 9
 	})
 }
 
+func TestM5S6ExplicitArtifactDeletion(t *testing.T) {
+	binary := buildDashboard(t)
+
+	t.Run("api_deletes_only_selected_artifact_and_rejects_unsafe_requests", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		apk := apkLikeZip(t)
+		wantSHA := sha256.Sum256(apk)
+
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer server.cleanup(t)
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+
+		firstUpload := requestArtifactUpload(t, baseURL, "delete-me.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+		if firstUpload.statusCode != http.StatusCreated {
+			t.Fatalf("first upload status = %d, want 201; body = %s", firstUpload.statusCode, firstUpload.body)
+		}
+		first := assertArtifactUploadJSON(t, firstUpload.body, "delete-me.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+		firstDir := filepath.Join(dataDir, "artifacts", first.ID)
+
+		secondUpload := requestArtifactUpload(t, baseURL, "keep-me.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+		if secondUpload.statusCode != http.StatusCreated {
+			t.Fatalf("second upload status = %d, want 201; body = %s", secondUpload.statusCode, secondUpload.body)
+		}
+		second := assertArtifactUploadJSON(t, secondUpload.body, "keep-me.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+		secondDir := filepath.Join(dataDir, "artifacts", second.ID)
+		failingUpload := requestArtifactUpload(t, baseURL, "delete-fails.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+		if failingUpload.statusCode != http.StatusCreated {
+			t.Fatalf("failing upload status = %d, want 201; body = %s", failingUpload.statusCode, failingUpload.body)
+		}
+		failing := assertArtifactUploadJSON(t, failingUpload.body, "delete-fails.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+		failingDir := filepath.Join(dataDir, "artifacts", failing.ID)
+		outsidePath := filepath.Join(values["TMPDIR"], "outside-artifact-target")
+		if err := os.WriteFile(outsidePath, []byte("preserve me"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outsidePath, filepath.Join(firstDir, "outside-link")); err != nil {
+			t.Fatalf("create symlink escape fixture: %v", err)
+		}
+
+		invalid := requestJSON(t, httpRequestSpec{method: "DELETE", url: baseURL + "/api/v1/artifacts/", headers: map[string]string{"Origin": baseURL}})
+		if invalid.statusCode != http.StatusBadRequest {
+			t.Fatalf("invalid delete status = %d, want 400; body = %s", invalid.statusCode, invalid.body)
+		}
+		assertAPIErrorEnvelope(t, invalid.body, "invalid_artifact_request")
+		assertDirExists(t, firstDir)
+		assertDirExists(t, secondDir)
+		assertDirExists(t, failingDir)
+		assertFileBytes(t, outsidePath, []byte("preserve me"))
+
+		if err := os.WriteFile(filepath.Join(failingDir, "metadata.json"), []byte("{not-json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deleteFailed := requestJSON(t, httpRequestSpec{method: "DELETE", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(failing.ID), headers: map[string]string{"Origin": baseURL}})
+		if deleteFailed.statusCode != http.StatusInternalServerError {
+			t.Fatalf("delete failure status = %d, want 500; body = %s", deleteFailed.statusCode, deleteFailed.body)
+		}
+		assertAPIErrorEnvelope(t, deleteFailed.body, "artifact_delete_failed")
+		assertDirExists(t, firstDir)
+		assertDirExists(t, secondDir)
+		assertDirExists(t, failingDir)
+		assertFileBytes(t, outsidePath, []byte("preserve me"))
+
+		for _, test := range []struct {
+			name     string
+			request  httpRequestSpec
+			wantCode string
+		}{
+			{name: "foreign_host", request: httpRequestSpec{method: "DELETE", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(first.ID), host: "foreign.example"}, wantCode: "forbidden_host"},
+			{name: "foreign_origin", request: httpRequestSpec{method: "DELETE", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(first.ID), headers: map[string]string{"Origin": "http://foreign.example"}}, wantCode: "forbidden_origin"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				response := requestJSON(t, test.request)
+				if response.statusCode != http.StatusForbidden {
+					t.Fatalf("status = %d, want 403; body = %s", response.statusCode, response.body)
+				}
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+				assertDirExists(t, firstDir)
+				assertDirExists(t, secondDir)
+				assertDirExists(t, failingDir)
+				assertFileBytes(t, outsidePath, []byte("preserve me"))
+			})
+		}
+
+		deleted := requestJSON(t, httpRequestSpec{method: "DELETE", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(first.ID), headers: map[string]string{"Origin": baseURL}})
+		if deleted.statusCode != http.StatusOK {
+			t.Fatalf("delete status = %d, want 200; body = %s", deleted.statusCode, deleted.body)
+		}
+		assertArtifactDeleteJSON(t, deleted.body, first.ID)
+		assertPathAbsent(t, firstDir)
+		assertDirExists(t, secondDir)
+		assertDirExists(t, failingDir)
+		assertFileBytes(t, outsidePath, []byte("preserve me"))
+
+		catalog := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts"})
+		if catalog.statusCode != http.StatusInternalServerError {
+			t.Fatalf("catalog with failed artifact status = %d, want 500; body = %s", catalog.statusCode, catalog.body)
+		}
+		assertAPIErrorEnvelope(t, catalog.body, "artifact_catalog_unavailable")
+		if err := os.RemoveAll(failingDir); err != nil {
+			t.Fatal(err)
+		}
+		catalog = requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts"})
+		if catalog.statusCode != http.StatusOK {
+			t.Fatalf("catalog status = %d, want 200; body = %s", catalog.statusCode, catalog.body)
+		}
+		assertArtifactCatalogJSON(t, catalog.body, []artifactUploadAssertion{second})
+
+		detail := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(first.ID)})
+		if detail.statusCode != http.StatusNotFound {
+			t.Fatalf("deleted detail status = %d, want 404; body = %s", detail.statusCode, detail.body)
+		}
+		assertAPIErrorEnvelope(t, detail.body, "artifact_not_found")
+
+		repeated := requestJSON(t, httpRequestSpec{method: "DELETE", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(first.ID), headers: map[string]string{"Origin": baseURL}})
+		if repeated.statusCode != http.StatusNotFound {
+			t.Fatalf("repeated delete status = %d, want 404; body = %s", repeated.statusCode, repeated.body)
+		}
+		assertAPIErrorEnvelope(t, repeated.body, "artifact_not_found")
+		assertPathAbsent(t, values["ADB_MARKER"])
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+
+	t.Run("browser_delete_refreshes_catalog_without_unsupported_controls", func(t *testing.T) {
+		env := isolatedEnv(t)
+		values := envMap(env)
+		dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+		apk := apkLikeZip(t)
+
+		server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+		defer server.cleanup(t)
+		addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+		baseURL := "http://" + addr
+		_, _, body := httpGet(t, baseURL+"/")
+		html := string(body)
+		assertM5S6BrowserShellOmitsUnsupportedArtifactControls(t, html)
+		script := extractInlineScript(t, html)
+
+		rendered := runFrontendScriptWithActions(t, script, baseURL, []frontendAction{
+			{
+				uploadInputID:  "artifact-upload-input",
+				uploadButtonID: "artifact-upload-submit",
+				fileName:       "browser-delete.apk",
+				contentType:    "application/vnd.android.package-archive",
+				content:        apk,
+				afterMS:        350,
+			},
+			{id: "artifact-detail-first", afterMS: 1800},
+			{id: "artifact-delete-first", afterMS: 2800},
+		})
+		for _, want := range []string{
+			"artifact-delete-status=delete: deleted",
+			"artifacts-status=artifacts: 0",
+			"artifacts-list=empty",
+			"artifact-detail=artifact detail: unavailable",
+		} {
+			if !strings.Contains(rendered, want) {
+				t.Fatalf("browser delete shell missing %q\nrendered:\n%s", want, rendered)
+			}
+		}
+		for _, forbidden := range []string{
+			"browser-delete.apk",
+			"install artifact",
+			"install apk",
+			"shell",
+			"reboot",
+			"uninstall",
+			values["HOME"],
+			dataDir,
+			"original.apk",
+			"metadata.json",
+		} {
+			if forbidden != "" && strings.Contains(rendered, forbidden) {
+				t.Fatalf("browser delete rendered stale, unsupported, or sensitive text %q:\n%s", forbidden, rendered)
+			}
+		}
+		assertArtifactsAbsentOrEmpty(t, filepath.Join(dataDir, "artifacts"))
+		assertPathAbsent(t, values["BROWSER_MARKER"])
+	})
+}
+
 func TestM1S4NoSubcommandStartsServer(t *testing.T) {
 	binary := buildDashboard(t)
 	env := isolatedEnv(t)
@@ -5035,7 +5218,6 @@ func assertM5S4BrowserShellOmitsUnsupportedArtifactControls(t *testing.T, text s
 		"shell",
 		"install artifact",
 		"install apk",
-		"delete",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
@@ -5058,7 +5240,6 @@ func assertArtifactBrowserOutputOmitsHostAndUnsupportedText(t *testing.T, text s
 		"metadata.json",
 		"install artifact",
 		"install apk",
-		"delete",
 		"shell",
 		"reboot",
 		"uninstall",
@@ -5086,7 +5267,6 @@ func assertM5S5BrowserShellOmitsUnsupportedArtifactControls(t *testing.T, text s
 		"shell",
 		"install artifact",
 		"install apk",
-		"delete",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
@@ -5109,13 +5289,37 @@ func assertArtifactAnalysisBrowserOutputOmitsHostAndUnsupportedText(t *testing.T
 		"metadata.json",
 		"install artifact",
 		"install apk",
-		"delete",
 		"shell",
 		"reboot",
 		"uninstall",
 	} {
 		if forbidden != "" && strings.Contains(text, forbidden) {
 			t.Fatalf("artifact analysis browser output contains forbidden text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func assertM5S6BrowserShellOmitsUnsupportedArtifactControls(t *testing.T, text string) {
+	t.Helper()
+
+	for _, forbidden := range []string{
+		"csrfToken",
+		"webSocketToken",
+		"raw command",
+		"transfers",
+		"reboot",
+		"uninstall",
+		"force-stop",
+		"disable",
+		"enable",
+		"pull",
+		"shell",
+		"install artifact",
+		"install apk",
+		"bulk delete",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
 		}
 	}
 }
@@ -6021,6 +6225,31 @@ func assertArtifactAnalysisJSON(t *testing.T, body []byte, wantArtifact artifact
 	return got.Analysis
 }
 
+func assertArtifactDeleteJSON(t *testing.T, body []byte, wantID string) {
+	t.Helper()
+
+	var got struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal artifact delete JSON: %v\nbody: %s", err, body)
+	}
+	if got.Artifact.ID != wantID {
+		t.Fatalf("deleted artifact id = %q, want %q; body = %s", got.Artifact.ID, wantID, body)
+	}
+	if !got.Deleted {
+		t.Fatalf("deleted = false, want true; body = %s", body)
+	}
+	for _, forbidden := range []string{"HOME=", "ADB_DASHBOARD", "secret", "original.apk", "metadata.json"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("artifact delete response contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+}
+
 func assertArtifactDetailJSONWithAnalysis(t *testing.T, body []byte, wantArtifact artifactUploadAssertion, wantAnalysis artifactAnalysisAssertion) {
 	t.Helper()
 
@@ -6186,6 +6415,10 @@ func apiErrorMessage(code string) string {
 		return "Artifact catalog is unavailable"
 	case "artifact_analysis_failed":
 		return "Artifact analysis failed"
+	case "invalid_artifact_request":
+		return "Invalid artifact request"
+	case "artifact_delete_failed":
+		return "Artifact delete failed"
 	default:
 		return ""
 	}

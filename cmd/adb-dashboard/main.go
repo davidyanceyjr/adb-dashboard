@@ -1253,6 +1253,15 @@ type artifactAnalysisResponse struct {
 	Analysis artifactAnalysis `json:"analysis"`
 }
 
+type artifactDeleteResponse struct {
+	Artifact deletedArtifact `json:"artifact"`
+	Deleted  bool            `json:"deleted"`
+}
+
+type deletedArtifact struct {
+	ID string `json:"id"`
+}
+
 type artifactAnalysis struct {
 	Tool               string   `json:"tool"`
 	PackageName        string   `json:"packageName"`
@@ -1504,6 +1513,10 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, dataDir s
 			handleArtifactDetail(writer, request, dataDir)
 			return
 		}
+		if request.Method == http.MethodDelete {
+			handleArtifactDelete(writer, request, dataDir)
+			return
+		}
 		writeUnknownRoute(writer)
 	})
 	mux.HandleFunc("/api/v1/", func(writer http.ResponseWriter, request *http.Request) {
@@ -1528,6 +1541,8 @@ var errArtifactStorageUnavailable = errors.New("artifact storage unavailable")
 var errArtifactNotFound = errors.New("artifact not found")
 var errArtifactCatalogUnavailable = errors.New("artifact catalog unavailable")
 var errArtifactAnalysisFailed = errors.New("artifact analysis failed")
+var errInvalidArtifactRequest = errors.New("invalid artifact request")
+var errArtifactDeleteFailed = errors.New("artifact delete failed")
 
 func handleArtifactCatalog(writer http.ResponseWriter, dataDir string) {
 	artifacts, err := readArtifactCatalog(dataDir)
@@ -1879,6 +1894,52 @@ func handleArtifactAnalysis(writer http.ResponseWriter, request *http.Request, d
 		return
 	}
 	writeJSON(writer, http.StatusOK, artifactAnalysisResponse{Artifact: stored.Artifact, Analysis: analysis})
+}
+
+func handleArtifactDelete(writer http.ResponseWriter, request *http.Request, dataDir string) {
+	idText := strings.TrimPrefix(request.URL.Path, "/api/v1/artifacts/")
+	id, err := url.PathUnescape(idText)
+	if err != nil || !validArtifactID(id) {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_artifact_request", "Invalid artifact request")
+		return
+	}
+
+	if err := deleteArtifact(dataDir, id); errors.Is(err, errArtifactNotFound) {
+		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
+		return
+	} else if err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "artifact_delete_failed", "Artifact delete failed")
+		return
+	}
+
+	writeJSON(writer, http.StatusOK, artifactDeleteResponse{
+		Artifact: deletedArtifact{ID: id},
+		Deleted:  true,
+	})
+}
+
+func deleteArtifact(dataDir, id string) error {
+	if !validArtifactID(id) {
+		return errInvalidArtifactRequest
+	}
+	artifactsDir := filepath.Join(dataDir, "artifacts")
+	artifactDir := filepath.Join(artifactsDir, id)
+	relative, err := filepath.Rel(artifactsDir, artifactDir)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || relative == ".." || filepath.IsAbs(relative) {
+		return errInvalidArtifactRequest
+	}
+	if _, err := readArtifactMetadataFile(filepath.Join(artifactDir, "metadata.json")); errors.Is(err, errArtifactNotFound) {
+		return errArtifactNotFound
+	} else if err != nil {
+		return errArtifactDeleteFailed
+	}
+	if err := os.RemoveAll(artifactDir); err != nil {
+		return errArtifactDeleteFailed
+	}
+	if _, err := os.Lstat(artifactDir); os.IsNotExist(err) {
+		return nil
+	}
+	return errArtifactDeleteFailed
 }
 
 func analyzeArtifactAPK(apkPath string) (artifactAnalysis, error) {
@@ -2495,7 +2556,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
       <dt>storage</dt><dd id="storage-status">storage: unavailable</dd>
       <dt>host tools</dt><dd id="host-tools-status">host tools: unavailable</dd>
-      <dt>artifacts</dt><dd><span id="artifacts-status">artifacts: unavailable</span><div class="controls"><input type="file" id="artifact-upload-input" accept=".apk,application/vnd.android.package-archive"><button type="button" id="artifact-upload-submit">upload</button><button type="button" id="artifact-refresh">refresh</button><button type="button" id="artifact-detail-first">details</button><button type="button" id="artifact-analyze-first">analyze</button></div><div id="artifact-upload-status" class="device-detail">upload: unavailable</div><div id="artifact-analysis-status" class="device-detail">analysis: unavailable</div><div id="artifacts-list" class="artifact-list"></div><div id="artifact-detail" class="device-detail">artifact detail: unavailable</div></dd>
+      <dt>artifacts</dt><dd><span id="artifacts-status">artifacts: unavailable</span><div class="controls"><input type="file" id="artifact-upload-input" accept=".apk,application/vnd.android.package-archive"><button type="button" id="artifact-upload-submit">upload</button><button type="button" id="artifact-refresh">refresh</button><button type="button" id="artifact-detail-first">details</button><button type="button" id="artifact-analyze-first">analyze</button><button type="button" id="artifact-delete-first">delete</button></div><div id="artifact-upload-status" class="device-detail">upload: unavailable</div><div id="artifact-analysis-status" class="device-detail">analysis: unavailable</div><div id="artifact-delete-status" class="device-detail">delete: unavailable</div><div id="artifacts-list" class="artifact-list"></div><div id="artifact-detail" class="device-detail">artifact detail: unavailable</div></dd>
     </dl>
   </main>
   <script>
@@ -2586,6 +2647,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("artifacts-status", "artifacts: unavailable");
     clearArtifactRows();
     setText("artifact-detail", "artifact detail: unavailable");
+    setText("artifact-delete-status", "delete: unavailable");
   };
 
   const renderArtifactDetail = (artifact, analysis) => {
@@ -2728,6 +2790,32 @@ const dashboardShellHTML = `<!doctype html>
     }
   };
 
+  const deleteFirstArtifact = async () => {
+    const artifact = latestArtifacts[0];
+    if (!artifact || !artifact.id) {
+      setText("artifact-delete-status", "delete: unavailable");
+      return;
+    }
+    setText("artifact-delete-status", "delete: loading");
+    try {
+      const response = await fetch("/api/v1/artifacts/" + encodeURIComponent(artifact.id), {
+        method: "DELETE",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error("artifact delete unavailable");
+      }
+      await response.json();
+      setText("artifact-delete-status", "delete: deleted");
+      setText("artifact-upload-status", "upload: unavailable");
+      setText("artifact-detail", "artifact detail: unavailable");
+      setText("artifact-analysis-status", "analysis: unavailable");
+      await loadArtifacts();
+    } catch (_) {
+      setText("artifact-delete-status", "delete: unavailable");
+    }
+  };
+
   const renderPackageRows = (items) => {
     latestPackages = items;
     const target = document.getElementById("device-packages-list");
@@ -2783,6 +2871,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("host-tools-status", "host tools: unavailable");
     setText("artifact-upload-status", "upload: unavailable");
     setText("artifact-analysis-status", "analysis: unavailable");
+    setText("artifact-delete-status", "delete: unavailable");
     artifactsUnavailable();
   };
 
@@ -3104,6 +3193,10 @@ const dashboardShellHTML = `<!doctype html>
     const artifactAnalyze = document.getElementById("artifact-analyze-first");
     if (artifactAnalyze) {
       artifactAnalyze.addEventListener("click", analyzeFirstArtifact);
+    }
+    const artifactDelete = document.getElementById("artifact-delete-first");
+    if (artifactDelete) {
+      artifactDelete.addEventListener("click", deleteFirstArtifact);
     }
     loadStatus();
   });
