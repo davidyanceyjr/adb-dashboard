@@ -1253,6 +1253,27 @@ type artifactAnalysisResponse struct {
 	Analysis artifactAnalysis `json:"analysis"`
 }
 
+type artifactReportResponse struct {
+	Report artifactReport `json:"report"`
+}
+
+type artifactReport struct {
+	Artifact artifactMetadata  `json:"artifact"`
+	Analysis artifactAnalysis  `json:"analysis"`
+	Sections []artifactSection `json:"sections"`
+}
+
+type artifactSection struct {
+	ID    string         `json:"id"`
+	Title string         `json:"title"`
+	Items []artifactItem `json:"items"`
+}
+
+type artifactItem struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
 type artifactDeleteResponse struct {
 	Artifact deletedArtifact `json:"artifact"`
 	Deleted  bool            `json:"deleted"`
@@ -1507,6 +1528,10 @@ func dashboardHandler(startedAt time.Time, bind string, readOnly bool, dataDir s
 	mux.HandleFunc("/api/v1/artifacts/", func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/analyze") {
 			handleArtifactAnalysis(writer, request, dataDir)
+			return
+		}
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/report") {
+			handleArtifactReport(writer, request, dataDir)
 			return
 		}
 		if request.Method == http.MethodGet {
@@ -1894,6 +1919,129 @@ func handleArtifactAnalysis(writer http.ResponseWriter, request *http.Request, d
 		return
 	}
 	writeJSON(writer, http.StatusOK, artifactAnalysisResponse{Artifact: stored.Artifact, Analysis: analysis})
+}
+
+func handleArtifactReport(writer http.ResponseWriter, request *http.Request, dataDir string) {
+	idText := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/api/v1/artifacts/"), "/report")
+	id, err := url.PathUnescape(idText)
+	if err != nil || !validArtifactID(id) {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_artifact_request", "Invalid artifact request")
+		return
+	}
+	format, ok := parseArtifactReportFormat(request.URL.Query())
+	if !ok || format != "json" {
+		writeAPIError(writer, http.StatusBadRequest, "invalid_report_format", "Invalid report format")
+		return
+	}
+
+	stored, err := readArtifactMetadataFile(filepath.Join(dataDir, "artifacts", id, "metadata.json"))
+	if errors.Is(err, errArtifactNotFound) {
+		writeAPIError(writer, http.StatusNotFound, "artifact_not_found", "Artifact not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(writer, http.StatusInternalServerError, "artifact_catalog_unavailable", "Artifact catalog is unavailable")
+		return
+	}
+	if stored.Artifact.AnalysisStatus != "ready" || stored.Analysis == nil {
+		writeAPIError(writer, http.StatusConflict, "artifact_report_unavailable", "Artifact report is unavailable")
+		return
+	}
+
+	report := artifactReport{
+		Artifact: stored.Artifact,
+		Analysis: *stored.Analysis,
+	}
+	report.Sections = artifactReportSections(report.Artifact, report.Analysis)
+	writeJSON(writer, http.StatusOK, artifactReportResponse{Report: report})
+}
+
+func parseArtifactReportFormat(values url.Values) (string, bool) {
+	format := "json"
+	if formatValues, ok := values["format"]; ok {
+		if len(formatValues) != 1 {
+			return "", false
+		}
+		format = formatValues[0]
+	}
+	return format, format == "json"
+}
+
+func artifactReportSections(artifact artifactMetadata, analysis artifactAnalysis) []artifactSection {
+	return []artifactSection{
+		{
+			ID:    "artifact",
+			Title: "Artifact",
+			Items: optionalReportItems([]artifactItem{
+				{Label: "original name", Value: artifact.OriginalName},
+				{Label: "artifact ID", Value: artifact.ID},
+				{Label: "SHA-256", Value: artifact.SHA256},
+				{Label: "byte size", Value: strconv.FormatInt(artifact.SizeBytes, 10)},
+				{Label: "created time", Value: artifact.CreatedAt},
+				{Label: "content type", Value: artifact.ContentType},
+			}),
+		},
+		{
+			ID:    "package",
+			Title: "Package",
+			Items: optionalReportItems([]artifactItem{
+				{Label: "package name", Value: analysis.PackageName},
+				{Label: "tool", Value: analysis.Tool},
+				{Label: "analyzed time", Value: analysis.AnalyzedAt},
+				{Label: "version name", Value: analysis.VersionName},
+				{Label: "version code", Value: analysis.VersionCode},
+				{Label: "application label", Value: analysis.ApplicationLabel},
+			}),
+		},
+		{
+			ID:    "sdk",
+			Title: "SDK",
+			Items: optionalReportItems([]artifactItem{
+				{Label: "min SDK", Value: analysis.MinSDKVersion},
+				{Label: "target SDK", Value: analysis.TargetSDKVersion},
+			}),
+		},
+		{
+			ID:    "activity",
+			Title: "Launchable Activity",
+			Items: optionalReportItems([]artifactItem{
+				{Label: "launchable activity", Value: analysis.LaunchableActivity},
+			}),
+		},
+		{
+			ID:    "warnings",
+			Title: "Warnings",
+			Items: warningReportItems(analysis.Warnings),
+		},
+		{
+			ID:    "localNotes",
+			Title: "Local Notes",
+			Items: []artifactItem{{
+				Label: "scope",
+				Value: "Generated from local artifact metadata and latest ready analysis only.",
+			}},
+		},
+	}
+}
+
+func optionalReportItems(items []artifactItem) []artifactItem {
+	filtered := make([]artifactItem, 0, len(items))
+	for _, item := range items {
+		if item.Value != "" {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func warningReportItems(warnings []string) []artifactItem {
+	items := make([]artifactItem, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning != "" {
+			items = append(items, artifactItem{Label: "warning", Value: warning})
+		}
+	}
+	return items
 }
 
 func handleArtifactDelete(writer http.ResponseWriter, request *http.Request, dataDir string) {

@@ -3,17 +3,17 @@
 ## Status
 
 - Roadmap status: Accepted
-- Roadmap version: 1.3.0
+- Roadmap version: 1.4.0
 - Specification source: `docs/SPECIFICATION.md`
-- Specification version: 1.3.0
-- Current milestone: M5
-- Next eligible slice: M5-S2
-- Last reviewed: 2026-08-02
+- Specification version: 1.4.0
+- Current milestone: M6
+- Next eligible slice: M6-S1
+- Last reviewed: 2026-08-06
 
 This roadmap selects implementation order for the accepted local bootstrap,
 read-only ADB discovery, M3 read-only device inspection, M4 read-only package
-inspection, and M5 local APK artifact intake and analysis contract. It does not
-claim behavior is implemented.
+inspection, M5 local APK artifact intake and analysis, and M6 local APK
+artifact reports contract. It does not claim behavior is implemented.
 
 ## Slice Rules
 
@@ -1159,7 +1159,7 @@ Every implementation slice must:
 
 ### Slice M5-S2: Artifact Catalog And Detail API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: List and retrieve stored artifact metadata and pending/no-analysis
   state through stable API responses before APK analysis exists.
@@ -1223,7 +1223,7 @@ Every implementation slice must:
 
 ### Slice M5-S3: Artifact Analysis API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Analyze one stored APK artifact locally with bounded fakeable
   `aapt dump badging` execution and persist the latest ready result.
@@ -1290,7 +1290,7 @@ Every implementation slice must:
 
 ### Slice M5-S4: Browser Artifact Upload And Catalog
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Make local artifact upload and catalog inspection usable from the
   browser.
@@ -1349,7 +1349,7 @@ Every implementation slice must:
 
 ### Slice M5-S5: Browser Artifact Analysis View
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Let the browser trigger local APK analysis and render ready/failure
   metadata states.
@@ -1406,7 +1406,7 @@ Every implementation slice must:
 
 ### Slice M5-S6: Explicit Artifact Deletion
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Delete one stored artifact and its analysis metadata explicitly and
   safely through API and browser.
@@ -1460,6 +1460,218 @@ Every implementation slice must:
 - Completion evidence reference: `.codex/plans/current.md` and
   `.codex/cycles/history.md`.
 
+## Milestone M6: Local APK Artifact Reports
+
+### Slice M6-S1: Artifact Report JSON API
+
+- Status: accepted
+- Mode: feature
+- Purpose: Generate a read-only JSON report for one analyzed artifact from
+  stored artifact metadata and latest ready analysis.
+- Specification references: `CAP-022`, `AC-022-001`, `AC-022-003`,
+  `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`, `DATA-006`, `DATA-007`
+- Observable result: A same-origin HTTP client can request
+  `GET /api/v1/artifacts/{artifactId}/report` with absent `format` or
+  `format=json` for an analyzed artifact and receive a stable JSON report
+  without metadata writes, host-tool execution, or host path disclosure, while
+  invalid formats and the interim `format=markdown` value fail explicitly.
+- Primary acceptance boundary: HTTP request through the running server with
+  isolated artifact storage and deterministic stored analysis metadata.
+- Expected red or baseline-green evidence: The focused HTTP/filesystem test
+  fails because the report route is absent, JSON report fields are missing or
+  invented, `format=json` is not accepted, invalid formats or interim
+  `format=markdown` do not return `400 invalid_report_format`,
+  no-ready-analysis artifacts report success, metadata is written during report
+  generation, ADB or `aapt` is executed during report generation, or rejected
+  Host/Origin requests reach artifact lookup.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused artifact report JSON API test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with isolated artifact storage, create
+  ready analysis through existing production artifact upload/analyze routes
+  using fake `aapt`, request the default JSON report and `format=json`, inspect
+  report fields and content type, record metadata file timestamp or content
+  stability, inspect fake-tool logs for no report-time execution, and repeat
+  `format=markdown`, another invalid format, no-ready-analysis, invalid ID,
+  unknown artifact, corrupt metadata, and rejected Host/Origin cases.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, temporary executable fixtures, and disposable APK fixtures.
+- Dependencies: `M5-S6`.
+- In scope:
+  - `GET /api/v1/artifacts/{artifactId}/report` defaulting to JSON.
+  - `format=json` returning the same JSON report as absent `format`.
+  - Invalid `format` values returning `400 invalid_report_format`.
+  - Interim `format=markdown` returning `400 invalid_report_format` until
+    M6-S2 changes it to Markdown success.
+  - JSON `report.artifact`, `report.analysis`, and `report.sections` with the
+    exact field names, optional-field omission rules, stable section order, and
+    item shape defined by `CAP-022`.
+  - Invalid ID, unknown artifact, no ready analysis, corrupt metadata, and
+    rejected Host/Origin behavior needed for the JSON route.
+  - Read-only proof that report generation does not write metadata or execute
+    host tools.
+- Out of scope:
+  - Markdown report format, browser report UI, browser export action, retained
+    report files, report indexes, report comparison, signing verification,
+    malware analysis, install, device mutation, external services, and
+    background jobs.
+- Risks:
+  - Report generation accidentally re-running `aapt` instead of using stored
+    ready analysis.
+  - Dynamic report fields making focused evidence unstable.
+  - Host path or command stderr leakage through derived report sections.
+- Stop conditions:
+  - Ready analysis cannot be created through accepted artifact routes in an
+    isolated test environment.
+  - Report generation would require executing new host tools, external network
+    calls, or persisting report files.
+- Documentation synchronization: Update user-facing API/manual documentation if
+  it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-022-001` and `AC-022-003` for absent `format`,
+  `format=json`, invalid artifact ID, invalid format including interim
+  `format=markdown`, unknown artifact ID, no ready analysis, corrupt metadata,
+  and rejected Host or Origin have green HTTP/filesystem evidence, no
+  report-time writes or host-tool execution occur, no sensitive values leak,
+  applicable broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M6-S2: Artifact Report Markdown API
+
+- Status: accepted
+- Mode: feature
+- Purpose: Change `format=markdown` from the M6-S1 interim format error to a
+  successful Markdown report without introducing retained report files.
+- Specification references: `CAP-022`, `AC-022-002`, `AC-022-003`,
+  `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`, `DATA-006`, `DATA-007`
+- Observable result: A same-origin HTTP client can request
+  `GET /api/v1/artifacts/{artifactId}/report?format=markdown` and receive the
+  documented local-only Markdown report, while existing invalid format and
+  negative-path behavior from M6-S1 remains unchanged before side effects.
+- Primary acceptance boundary: HTTP request through the running server with
+  isolated artifact storage and deterministic stored analysis metadata.
+- Expected red or baseline-green evidence: The focused HTTP/filesystem test
+  starts from the M6-S1 behavior where `format=markdown` returns
+  `400 invalid_report_format`, then fails for this slice because Markdown
+  success is unsupported or returns the wrong content type, Markdown omits
+  required semantic sections, existing invalid `format` behavior regresses,
+  report output leaks host paths or stderr, metadata is written, or report
+  generation executes ADB or `aapt`.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused artifact report Markdown API test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with isolated artifact storage, create
+  ready analysis through existing production routes, request Markdown format,
+  inspect status, `Content-Type`, semantic report content matching the
+  `CAP-022` section order, local-only note, and absence of host paths or
+  tokens, repeat another invalid format and rejected Host/Origin cases, and
+  inspect metadata files and fake-tool logs.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, temporary executable fixtures, and disposable APK fixtures.
+- Dependencies: `M6-S1`.
+- In scope:
+  - `format=markdown` output for the report route.
+  - `Content-Type: text/markdown`.
+  - Required Markdown semantic sections from `CAP-022`.
+  - Preservation of M6-S1 invalid `format` error behavior for values other
+    than `markdown`.
+  - Read-only and no-host-tool proof for Markdown generation.
+- Out of scope:
+  - Browser report UI, browser export action, downloaded filename policy,
+    retained report files, report comparison, signing verification, malware
+    analysis, install, device mutation, external services, and background jobs.
+- Risks:
+  - Overfitting Markdown formatting instead of testing stable semantic content.
+  - Markdown escaping or truncation leaking unintended raw tool output.
+- Stop conditions:
+  - Markdown report cannot be generated deterministically from stored report
+    data.
+  - Meeting the contract would require persisted report files or new analysis
+    execution.
+- Documentation synchronization: Update user-facing API/manual documentation if
+  it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-022-002` has green HTTP/filesystem evidence changing
+  `format=markdown` from `400 invalid_report_format` to `200 text/markdown`,
+  Markdown content contains the documented semantic sections, M6-S1 negative
+  format behavior for non-Markdown invalid values remains green, no report-time
+  writes or host-tool execution occur, no sensitive values leak, applicable
+  broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
+### Slice M6-S3: Browser Artifact Report View And Export
+
+- Status: accepted
+- Mode: feature
+- Purpose: Make local artifact reports usable from the browser for analyzed
+  artifacts, including explicit Markdown export and stale-state clearing.
+- Specification references: `CAP-022`, `CAP-023`, `AC-023-001`,
+  `AC-023-002`, `AC-023-003`, `INV-FRONTEND-001`, `INV-SEC-004`,
+  `INV-DATA-004`
+- Observable result: A browser user can open an analyzed artifact report,
+  inspect report fields derived from the production JSON report API, export the
+  Markdown report through the production report route, and observe unavailable
+  or failure state when no ready report exists.
+- Primary acceptance boundary: Browser interaction through the running server
+  with isolated artifact storage and production report routes.
+- Expected red or baseline-green evidence: The focused browser test fails
+  because report state is absent, report state is static or invented instead of
+  fetched from the backend report API, Markdown export does not call the
+  production report route, stale report content remains after artifact change or
+  deletion, or unsupported mutation/install/external-service controls appear.
+- Focused verification command or deterministic discovery rule: Discover the
+  focused browser artifact report test command and record it in
+  `.codex/plans/current.md` before implementation begins.
+- Real-path exercise: Start the server with isolated storage and fake `aapt`,
+  upload and analyze a disposable artifact, open the served shell, open the
+  artifact report, inspect visible report fields, trigger Markdown export,
+  inspect export status and report route response, switch or delete artifacts,
+  inspect stale-state clearing and unavailable/failure states, and inspect
+  filesystem absence of retained report files.
+- Broad verification: Run applicable repository test, formatting, lint,
+  type-check, build, browser-script, API, and filesystem checks discovered from
+  repository entry points.
+- Required environment: Linux host with loopback networking, writable temporary
+  filesystem, browser automation or deterministic browser-script support, fake
+  `aapt`, and disposable APK fixtures.
+- Dependencies: `M6-S2`.
+- In scope:
+  - Browser report view for one analyzed artifact.
+  - Browser report unavailable/failure state for pending, deleted, or
+    report-failing artifacts.
+  - Explicit Markdown export action through the production report API.
+  - Stale report clearing after artifact selection changes, report refresh
+    failure, or artifact deletion.
+  - Unsupported-control absence.
+- Out of scope:
+  - Report editing, retained report library, compare reports, signing
+    verification, malware analysis, install/uninstall, device mutation,
+    external services, background jobs, and broad UI redesign.
+- Risks:
+  - Browser evidence passing against static markup rather than production
+    report responses.
+  - Export behavior being confused with server-side report file persistence.
+- Stop conditions:
+  - Browser report and export behavior cannot be exercised against production
+    routes.
+  - The UI would need retained reports, external services, install, or device
+    mutation behavior to appear complete.
+- Documentation synchronization: Update user-facing manual/browser
+  documentation if it exists; otherwise record `DOCS NOT REQUIRED` with reason.
+- Exit gate: `AC-023-001` through `AC-023-003` have green browser/API and
+  filesystem evidence, report state derives from production report responses,
+  Markdown export uses the production route, stale content is cleared, no
+  retained report files are created, unsupported controls are absent,
+  applicable broad checks pass or have recorded blockers, and review passes.
+- Completion evidence reference: `.codex/plans/current.md` and
+  `.codex/cycles/history.md`.
+
 ## Dependency Order
 
 ```text
@@ -1468,25 +1680,28 @@ M1-S6 -> M2-S1 -> M2-S2 -> M2-S3 -> M2-S4
 M2-S4 -> M3-S1 -> M3-S2 -> M3-S3
 M3-S3 -> M4-S1 -> M4-S2 -> M4-S3 -> M4-S4 -> M4-S5
 M4-S5 -> M5-S1 -> M5-S2 -> M5-S3 -> M5-S4 -> M5-S5 -> M5-S6
+M5-S6 -> M6-S1 -> M6-S2 -> M6-S3
 ```
 
 ## Future Milestones
 
 Future mutating ADB, interactive device control, WebSocket streaming, file
 transfer, install/uninstall workflows, artifact reporting beyond local APK
-metadata, logging redaction, request-correlation, performance, migration,
-packaging, release, and deployment behavior requires a later accepted
-specification before roadmap slices are added.
+metadata reports, logging redaction, request-correlation, performance,
+migration, packaging, release, and deployment behavior requires a later
+accepted specification before roadmap slices are added.
 
 ## Roadmap Acceptance Record
 
 - Audit result: ROADMAP ACCEPTED
 - Reviewed slices: `M1-S1` through `M1-S6`; `M2-S1` through `M2-S4`;
-  `M3-S1` through `M3-S3`; `M4-S1` through `M4-S5`; `M5-S1` through `M5-S6`
+  `M3-S1` through `M3-S3`; `M4-S1` through `M4-S5`; `M5-S1` through
+  `M5-S6`; `M6-S1` through `M6-S3`
 - Blocking gaps: None for the accepted local bootstrap, read-only ADB
   discovery, M3 read-only device inspection, M4 read-only package inspection,
-  and M5 local APK artifact intake and analysis contract.
+  M5 local APK artifact intake and analysis, and M6 local APK artifact reports
+  contract.
 - Evidence or review reference: Authored against `docs/SPECIFICATION.md`
-  version `1.3.0`, `docs/ROADMAP_GUIDE.md`,
+  version `1.4.0`, `docs/ROADMAP_GUIDE.md`,
   `docs/ROADMAP.template.md`, `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and
-  repository source material available on 2026-08-01.
+  repository source material available on 2026-08-06.

@@ -3,12 +3,13 @@
 ## Scope
 
 These steps exercise the current implementation level through
-`M5-S6`: local CLI behavior, configuration and startup checks, loopback server
+`M6-S1`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
 read-only package inventory API/browser behavior plus package detail API
 behavior and local APK artifact upload, catalog, detail, analysis API, and
-browser analysis and deletion behavior.
+browser analysis and deletion behavior, plus local artifact JSON report API
+behavior.
 
 ## Requirements
 
@@ -919,6 +920,68 @@ Expected result:
 - Failed analysis does not replace a prior ready analysis and does not store a
   false ready result.
 - Rejected Host or Origin requests return HTTP `403` before `aapt` is invoked.
+
+## Artifact JSON Report API
+
+After an artifact has ready analysis, request the JSON report:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/report"
+
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/report?format=json"
+```
+
+Expected result:
+
+- Each report request returns HTTP `200` with `Content-Type:
+  application/json`.
+- The response contains only top-level `report`.
+- `report.artifact` contains stored artifact metadata and
+  `analysisStatus=ready`.
+- `report.analysis` contains the latest ready `aapt` analysis stored in
+  metadata.
+- `report.sections` appears in this order: `artifact`, `package`, `sdk`,
+  `activity`, `warnings`, `localNotes`.
+- Optional report fields and section items appear only when stored metadata or
+  analysis contains values for them.
+- The local notes section includes `Generated from local artifact metadata and
+  latest ready analysis only.`.
+- Report generation does not change
+  `$DATA_DIR/artifacts/ARTIFACT_ID/metadata.json`.
+- Report generation does not invoke `adb`, `aapt`, install or mutate an APK,
+  write report files, send network requests, or expose stored host paths,
+  `original.apk`, `metadata.json`, command stderr, environment values, or token
+  values.
+
+Check report negative behavior:
+
+```sh
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/report?format=markdown"
+
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/report?format=xml"
+
+curl -i -sS -H "Origin: http://$ADDR" \
+  "http://$ADDR/api/v1/artifacts/unknown-artifact/report"
+
+curl -i -sS -H "Host: foreign.example" \
+  "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/report"
+```
+
+Expected result:
+
+- `format=markdown` and other non-`json` formats return HTTP `400` with code
+  `invalid_report_format`; Markdown success is not implemented until `M6-S2`.
+- Unknown artifact IDs return HTTP `404` with code `artifact_not_found`.
+- Existing artifacts without ready analysis return HTTP `409` with code
+  `artifact_report_unavailable`.
+- Corrupt stored metadata returns HTTP `500` with code
+  `artifact_catalog_unavailable`.
+- Rejected Host or Origin requests return HTTP `403` before artifact lookup or
+  report generation.
 
 ## Artifact Deletion API
 

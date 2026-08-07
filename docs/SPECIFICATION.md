@@ -3,11 +3,11 @@
 ## Status
 
 - Contract status: Accepted
-- Specification version: 1.3.0
+- Specification version: 1.4.0
 - Product or system: ADB Dashboard
 - Version or milestone: Local bootstrap, read-only ADB discovery, M3 read-only
   device inspection, M4 read-only package inspection, and M5 local APK artifact
-  intake and analysis
+  intake and analysis, and M6 local APK artifact reports
 - Owners or decision authority: ADB Dashboard Project
 - Last reviewed: August 2026
 - Supersedes:
@@ -24,7 +24,8 @@ for current dashboard status and read-only Android Debug Bridge inspection.
 The accepted current contract covers local bootstrap behavior, read-only ADB
 discovery and device inventory, M3 read-only device inspection through explicit
 refresh, device detail, bounded logcat reads, and screenshot capture, M4
-read-only package inspection, and M5 local APK artifact intake and analysis.
+read-only package inspection, M5 local APK artifact intake and analysis, and
+M6 local APK artifact reports.
 Interactive sessions, file transfer, device mutation, background jobs, retained
 device output, and persistence beyond the artifact contracts are outside this
 specification until a later accepted capability defines them.
@@ -59,6 +60,9 @@ specification until a later accepted capability defines them.
 - Browser-visible package inventory and package detail states.
 - Local APK artifact upload, listing, detail, metadata extraction, browser
   artifact states, and explicit artifact deletion.
+- Local artifact report generation from stored APK metadata and latest ready
+  analysis.
+- Browser-visible artifact report state and explicit report export.
 - Standard `NIY` behavior for recognized unavailable actions and status fields.
 
 ### Out Of Scope
@@ -81,7 +85,7 @@ specification until a later accepted capability defines them.
   `CAP-019`.
 - Artifact project storage, uploads, analysis, indexes, reports, caches,
   command history, retained output, and background jobs outside the local APK
-  artifact behavior defined by `CAP-018` through `CAP-021`.
+  artifact behavior defined by `CAP-018` through `CAP-023`.
 - Public OpenAPI documents, routes, commands, UI controls, settings, or
   configuration keys for out-of-scope behavior.
 
@@ -90,10 +94,11 @@ specification until a later accepted capability defines them.
 | Actor or caller | Public interface | Trust or ownership boundary | Relevant capabilities |
 |---|---|---|---|
 | Local operator | CLI process invocation | User account running the process | `CAP-001` through `CAP-006`, `CAP-010`, `INV-NIY-001` |
-| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009`, `CAP-012` through `CAP-021` |
-| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `CAP-011`, `CAP-013` through `CAP-021`, `INV-NIY-001` |
+| Browser loaded from the local server | Embedded UI and same-origin HTTP requests | Browser origin boundary | `CAP-007`, `CAP-008`, `CAP-009`, `CAP-012` through `CAP-023` |
+| HTTP client | Loopback HTTP API | Host and origin policy enforced by backend | `CAP-008`, `CAP-009`, `CAP-011`, `CAP-013` through `CAP-023`, `INV-NIY-001` |
 | Host filesystem | Config, data directory, temp directory | Files owned or selected by process user | `CAP-004`, `CAP-005`, `CAP-006` |
-| Host filesystem | Local APK artifacts | Files under resolved data directory | `CAP-018`, `CAP-020`, `CAP-021` |
+| Host filesystem | Local APK artifacts | Files under resolved data directory | `CAP-018`, `CAP-020`, `CAP-021`, `CAP-022` |
+| HTTP response body | Local APK artifact reports | Generated from stored local artifact metadata | `CAP-022`, `CAP-023` |
 | Host ADB client | `adb` process invocation | Executable resolved from process `PATH` | `CAP-010`, `CAP-011`, `CAP-013` through `CAP-017` |
 | Host APK analysis tool | `aapt` process invocation | Executable resolved from process `PATH` | `CAP-019` |
 
@@ -2367,6 +2372,250 @@ and error codes are stable for this specification version.
 
 - None.
 
+### CAP-022: Local Artifact Report API
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser or same-origin HTTP client can generate an on-demand
+report for one stored APK artifact from local artifact metadata and the latest
+ready analysis, without re-running analysis, installing the APK, or writing
+report files.
+
+**Actors or callers:** Browser loaded from the dashboard server and local HTTP
+clients on the same origin.
+
+**Inputs and preconditions:** The server is running. Requests use
+`GET /api/v1/artifacts/{artifactId}/report`. The artifact ID is an opaque ID
+previously returned by `CAP-018`. The optional `format` query parameter accepts
+`json` or `markdown`; absent `format` defaults to `json`. A ready analysis from
+`CAP-019` must be present for report success.
+
+**Successful behavior:** The backend reads the selected artifact metadata and
+latest ready analysis from local storage, derives ordered report sections from
+those stored values, and returns the requested format. Report generation is
+read-only and does not update artifact metadata.
+
+**Output, response, event, or visible state:** JSON report responses return
+HTTP `200` with `Content-Type: application/json` and a top-level object
+containing only `report`. `report` contains `artifact`, `analysis`, and
+`sections`.
+
+`report.artifact` contains these fields copied from stored artifact metadata:
+`id` string, `originalName` string, `sizeBytes` integer, `sha256` string,
+optional `contentType` string, `createdAt` RFC3339 string, and
+`analysisStatus` string equal to `ready`. `contentType` is omitted when absent
+from stored metadata; it is not returned as `null` or an empty substitute.
+
+`report.analysis` contains these fields copied from the latest ready
+`CAP-019` analysis: `tool` string equal to `aapt`, `packageName` string,
+optional `versionName` string, optional `versionCode` string, optional
+`minSdkVersion` string, optional `targetSdkVersion` string, optional
+`applicationLabel` string, optional `launchableActivity` string, optional
+`warnings` array of strings, and `analyzedAt` RFC3339 string. Optional analysis
+fields are omitted when absent from stored analysis; they are not returned as
+`null`, empty strings, or invented values. `warnings` is omitted when absent or
+empty.
+
+`report.sections` is an array of section objects in this exact order:
+`artifact`, `package`, `sdk`, `activity`, `warnings`, `localNotes`. Each
+section object contains `id` string, `title` string, and `items` array. Each
+item contains `label` string and `value` string. Integer values from the JSON
+report are rendered as base-10 strings inside section items. The `artifact`
+section title is `Artifact` and includes items for original name, artifact ID,
+SHA-256, byte size, created time, and content type only when present. The
+`package` section title is `Package` and includes package name, tool, analyzed
+time, version name when present, version code when present, and application
+label when present. The `sdk` section title is `SDK` and includes min SDK and
+target SDK items only when present; if neither value is present, the section
+has an empty `items` array. The `activity` section title is `Launchable
+Activity` and includes launchable activity only when present; if absent, the
+section has an empty `items` array. The `warnings` section title is `Warnings`
+and includes one item per stored warning, using label `warning`; if no warnings
+are present, the section has an empty `items` array. The `localNotes` section
+title is `Local Notes` and contains one item with label `scope` and value
+`Generated from local artifact metadata and latest ready analysis only.`.
+
+Markdown report responses return HTTP `200` with `Content-Type:
+text/markdown` and a human-readable document containing the same semantic
+sections and values as `report.sections`, plus the artifact name, artifact ID,
+SHA-256, byte size, package name, version fields when present, SDK fields when
+present, application label when present, launchable activity when present,
+warning lines when present, and the explicit local-only note. Both formats omit
+host filesystem paths, command stderr, environment values, and token values.
+
+**Required side effects:** None.
+
+**Forbidden side effects:** Report generation must not execute ADB, execute
+`aapt`, install or mutate an APK, send network requests, create report files,
+write metadata, delete artifacts, expose stored host paths, or invent artifact,
+analysis, or section values that are absent from stored metadata or the latest
+ready analysis.
+
+**Errors and negative behavior:**
+
+- Invalid artifact ID syntax returns HTTP `400` with code
+  `invalid_artifact_request`.
+- Invalid `format` returns HTTP `400` with code `invalid_report_format`.
+- Unknown artifact ID returns HTTP `404` with code `artifact_not_found`.
+- Existing artifact without ready analysis returns HTTP `409` with code
+  `artifact_report_unavailable`.
+- Corrupt metadata returns HTTP `500` with code
+  `artifact_catalog_unavailable`.
+- Rejected Host or Origin requests return the standard security envelope before
+  artifact lookup or report generation.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Security and
+ID validation run before filesystem reads. Each request reads current metadata
+from disk and produces a response without retaining generated report output.
+
+**Security, authorization, privacy, and data safety:** Reports remain local to
+the loopback HTTP response. Report output includes only fields already exposed
+by current artifact and analysis APIs plus the stable section labels named
+above.
+
+**Compatibility and versioning:** The route, accepted format values, status
+codes, JSON field names, Markdown semantic content, and error codes are stable
+for this specification version.
+
+#### Acceptance Criteria
+
+- `AC-022-001`: Given a stored artifact with ready analysis, when JSON report
+  format is requested or omitted, then HTTP `200` returns the documented report
+  object derived from artifact metadata and latest analysis, performs no writes
+  or host-tool execution, and exposes no host paths, stderr, environment
+  values, or tokens.
+- `AC-022-002`: Given a stored artifact with ready analysis, when Markdown
+  report format is requested, then HTTP `200` returns a Markdown document with
+  the documented semantic sections, performs no writes or host-tool execution,
+  and exposes no host paths, stderr, environment values, or tokens.
+- `AC-022-003`: Given invalid artifact ID, invalid format, unknown artifact ID,
+  no ready analysis, corrupt metadata, or rejected Host or Origin, when report
+  generation is requested, then the documented status and error code are
+  returned before forbidden side effects.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: HTTP request through the running server with isolated
+  artifact storage and deterministic stored analysis metadata.
+- Focused evidence expected: process/HTTP and filesystem tests for JSON report
+  success, Markdown report success, invalid ID, invalid format, unknown
+  artifact, missing ready analysis, corrupt metadata, security rejection,
+  absence of metadata writes, and absence of ADB or `aapt` execution.
+- Real-path exercise: start the server with isolated artifact storage, upload
+  and analyze a disposable APK through existing production routes or prepare
+  equivalent stored metadata through accepted artifact APIs, request JSON and
+  Markdown reports, inspect response bodies and headers, repeat negative cases,
+  and inspect fake-tool logs and metadata timestamps to prove no report-time
+  host-tool execution or writes.
+- Required environment: Linux host with loopback networking, writable
+  temporary filesystem, and disposable artifact fixtures.
+- Permitted deterministic substitutes: generated APK fixtures and fake `aapt`
+  used only to create prior ready analysis through `CAP-019`.
+- Evidence that does not count: static formatting tests, report builder tests
+  that bypass the production route, or tests that do not prove report
+  generation is read-only.
+
+#### Blocking Open Questions
+
+- None.
+
+### CAP-023: Browser Artifact Report View And Export
+
+**Contract status:** Implementation-ready
+
+**Goal:** A local browser user can open a report for one analyzed artifact,
+read the derived local report state, and explicitly export the Markdown report
+without install, device mutation, external service, or report persistence
+behavior.
+
+**Actors or callers:** Browser loaded from the dashboard server.
+
+**Inputs and preconditions:** The server is running. Artifact catalog and
+detail behavior from `CAP-020` is available. Report API behavior from
+`CAP-022` is available. The selected artifact may have ready analysis, pending
+analysis, failed analysis, or corrupt/unavailable metadata.
+
+**Successful behavior:** For an artifact with ready analysis, the browser uses
+`GET /api/v1/artifacts/{artifactId}/report` to render report fields derived
+from the backend JSON response and uses the same route with `format=markdown`
+for an explicit export action. The browser refreshes report state when the
+selected artifact changes or after analysis completes.
+
+**Output, response, event, or visible state:** Browser state shows artifact
+identity, integrity values, package metadata, warning summary when present,
+local-only report state, and export success or failure state. Pending or
+missing analysis shows an unavailable report state rather than invented report
+content.
+
+**Required side effects:** Browser export requests fetch the Markdown report
+from the production report API. No server-side report file is created.
+
+**Forbidden side effects:** The browser must not expose install, uninstall,
+device mutation, shell, file-transfer, WebSocket, external-service, background
+job, retained-report, or report-delete controls for M6 report behavior. The
+browser must not synthesize successful report content without a successful
+backend report response.
+
+**Errors and negative behavior:** Backend report errors from `CAP-022` render
+visible failure or unavailable report states. Stale report content is cleared
+when the selected artifact changes, the artifact is deleted, or report refresh
+fails.
+
+**Ordering, lifecycle, timeout, cancellation, retry, and cleanup:** Report
+requests are explicit browser actions or selected-artifact refreshes. Browser
+state follows the latest backend response and does not persist generated report
+content across unrelated artifact selections.
+
+**Security, authorization, privacy, and data safety:** Browser-visible report
+state omits token values, host filesystem paths, command stderr, environment
+values, and unsupported mutation controls.
+
+**Compatibility and versioning:** Browser-visible semantic report labels and
+export behavior are stable for this specification version; layout and styling
+may evolve without changing the contract.
+
+#### Acceptance Criteria
+
+- `AC-023-001`: Given a stored artifact with ready analysis, when the browser
+  opens its report, then visible report state is derived from the production
+  JSON report response and includes artifact identity, integrity, package
+  metadata, warning summary when present, and local-only report state.
+- `AC-023-002`: Given a stored artifact with ready analysis, when the browser
+  export action is used, then the browser requests the production Markdown
+  report route, exposes export success or failure state from that response, and
+  no server-side report file is created.
+- `AC-023-003`: Given pending analysis, report API failure, artifact selection
+  change, artifact deletion, or rejected Host or Origin behavior, when the
+  browser refreshes report state, then stale report content is cleared or
+  replaced with the documented unavailable/failure state and unsupported
+  mutation, install, shell, file-transfer, external-service, job, and retained
+  report controls are absent.
+
+#### Observable Acceptance Boundary
+
+- Primary boundary: Browser interaction through the running server with
+  isolated artifact storage and production report routes.
+- Focused evidence expected: browser-boundary tests for ready report rendering,
+  Markdown export request behavior, pending/no-analysis state, report failure
+  state, stale report clearing after artifact change or deletion, unsupported
+  control absence, and token/path/stderr omission.
+- Real-path exercise: start the server with isolated storage, upload and
+  analyze a disposable artifact, open the served shell, open the artifact
+  report, trigger Markdown export, inspect browser-visible report fields and
+  status, delete or switch artifacts, and inspect stale-state clearing and
+  filesystem absence of retained report files.
+- Required environment: Linux host with loopback networking, writable
+  temporary filesystem, browser automation or deterministic browser-script
+  support, and disposable artifact fixtures.
+- Permitted deterministic substitutes: fake `aapt` executable and generated
+  APK fixtures used to create prior ready analysis.
+- Evidence that does not count: static markup checks or browser tests that do
+  not prove state comes from production report responses.
+
+#### Blocking Open Questions
+
+- None.
+
 ### INV-NIY-001: Standard NIY Behavior
 
 **Contract status:** Current invariant
@@ -2468,7 +2717,7 @@ Documented environment variables:
 | `DATA-004` | resolved `server.data_dir` | create or validate directory | process user | directory may remain if later startup validation fails | no cleanup in current contract | `CAP-005` failure |
 | `DATA-005` | resolved `server.temp_dir` | create or validate directory | process user | directory may remain if startup succeeds or fails after creation | no cleanup in current contract | `CAP-005` failure |
 | `DATA-006` | `server.data_dir/artifacts/ARTIFACT_ID/original.apk` | write on upload, read for analysis, delete on explicit deletion | process user | written through temporary file then atomic move | retained until explicit artifact deletion | `CAP-018`, `CAP-019`, or `CAP-021` failure |
-| `DATA-007` | `server.data_dir/artifacts/ARTIFACT_ID/metadata.json` | write on upload and analysis, read for catalog/detail, delete on explicit deletion | process user | write replacement must not expose partial metadata | retained until explicit artifact deletion | `CAP-018`, `CAP-019`, `CAP-020`, or `CAP-021` failure |
+| `DATA-007` | `server.data_dir/artifacts/ARTIFACT_ID/metadata.json` | write on upload and analysis, read for catalog/detail/report, delete on explicit deletion | process user | write replacement must not expose partial metadata | retained until explicit artifact deletion | `CAP-018`, `CAP-019`, `CAP-020`, `CAP-021`, or `CAP-022` failure |
 
 ## Public Interfaces And Output
 
@@ -2513,8 +2762,10 @@ Values may vary by build. Labels and order are stable.
 
 ### HTTP API
 
-The current API root is `/api/v1`. Current responses use JSON with content type
-`application/json`. Only these routes are current public behavior:
+The accepted API root is `/api/v1`. Responses use JSON with content type
+`application/json` unless a route explicitly specifies another response format.
+Implemented and verified route status is proven by cycle evidence. These routes
+are accepted by this specification and verified through M5-S6:
 
 - `GET /api/v1/bootstrap`
 - `GET /api/v1/status`
@@ -2531,7 +2782,14 @@ The current API root is `/api/v1`. Current responses use JSON with content type
 - `DELETE /api/v1/artifacts/{artifactId}`
 - unknown `/api/v1` route error handling
 
-Only `POST /api/v1/artifacts` requires a request body.
+These accepted M6 routes are specified for implementation but are not claimed
+as verified current behavior until their implementation cycles provide
+evidence:
+
+- `GET /api/v1/artifacts/{artifactId}/report`
+
+Only `POST /api/v1/artifacts` requires a request body. Report responses are
+generated on demand and are not retained as server-side files.
 
 ### Exit Status
 
@@ -2561,7 +2819,8 @@ Only `POST /api/v1/artifacts` requires a request body.
   commands.
 - `INV-DATA-004`: Artifact behavior may write only the artifact files and
   metadata named by `DATA-006` and `DATA-007` under the resolved data
-  directory, and deletion may remove only one selected artifact directory.
+  directory, deletion may remove only one selected artifact directory, and
+  report generation must not write retained report files.
 
 ## Compatibility And Migration
 
@@ -2569,7 +2828,8 @@ Only `POST /api/v1/artifacts` requires a request body.
 - The HTTP server is local-only and uses plain HTTP on loopback.
 - Current command names, option names, configuration keys, environment variable
   names, exit-status meanings, doctor row names, API route paths, JSON field
-  names, and `NIY` function names are stable for specification version `1.3.0`.
+  names, report format values, and `NIY` function names are stable for
+  specification version `1.4.0`.
 - Additional fields, routes, commands, UI controls, files, and configuration
   keys require a later accepted capability.
 - No persisted data schema or migration behavior exists in the current
@@ -2586,25 +2846,29 @@ Only `POST /api/v1/artifacts` requires a request body.
 - Device mutation, interactive ADB workflows, retained device output, and
   host-tool workflows other than local APK analysis are unavailable until later
   specifications define exact behavior.
+- Artifact reports are generated on demand from stored local metadata and ready
+  analysis; retained report files, report indexes, comparisons, signing
+  verification, malware analysis, and external lookups are outside the current
+  contract.
 - Fastboot is outside the current contract.
 
 ## Open Questions
 
-- None for `CAP-001` through `CAP-021` and `INV-NIY-001`.
+- None for `CAP-001` through `CAP-023` and `INV-NIY-001`.
 
 Future mutating ADB, interactive device control, WebSocket streaming, file
-transfer, install/uninstall workflows, artifact reporting beyond local APK
-metadata, logging redaction, request-correlation, performance, packaging,
-release, deployment, and migration behavior requires separate specification
-before it can be implemented.
+transfer, install/uninstall workflows, artifact reporting beyond on-demand
+local metadata reports, logging redaction, request-correlation, performance,
+packaging, release, deployment, and migration behavior requires separate
+specification before it can be implemented.
 
 ## Specification Acceptance Record
 
 - Audit result: SPECIFICATION ACCEPTED
-- Reviewed capabilities: `CAP-001` through `CAP-021`; `INV-NIY-001`
+- Reviewed capabilities: `CAP-001` through `CAP-023`; `INV-NIY-001`
 - Blocking gaps: None for the local bootstrap, read-only ADB discovery, M3
   read-only device inspection, M4 read-only package inspection, and M5 local
-  APK artifact intake and analysis contract
+  APK artifact intake and analysis, and M6 local APK artifact reports contract
 - Evidence or review reference: Authored against
   `docs/SPECIFICATION_GUIDE.md`, `docs/SPECIFICATION.template.md`,
   `docs/READINESS_CHECKLIST.md`, `AGENTS.md`, and the source material available

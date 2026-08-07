@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -4026,6 +4027,123 @@ printf "application-label:'No Package'\n"
 	assertPathAbsent(t, values["BROWSER_MARKER"])
 }
 
+func TestM6S1ArtifactReportJSONAPI(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+	aaptMarker := filepath.Join(values["TMPDIR"], "report-aapt-invoked")
+	env = append(env, "AAPT_MARKER="+aaptMarker)
+	writeFakeAAPT(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+if [ "$1" != "dump" ] || [ "$2" != "badging" ]; then
+  printf 'unexpected argv\n' >&2
+  exit 7
+fi
+printf "package: name='com.example.ready' versionCode='42' versionName='1.2.3'\n"
+printf "sdkVersion:'23'\n"
+printf "targetSdkVersion:'35'\n"
+printf "application-label:'Example App'\n"
+printf "launchable-activity: name='com.example.ready.MainActivity'\n"
+printf "WARNING: duplicate resource\n"
+`)
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+	defer server.cleanup(t)
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+
+	apk := apkLikeZip(t)
+	wantSHA := sha256.Sum256(apk)
+	upload := requestArtifactUpload(t, baseURL, "report-me.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+	if upload.statusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201; body = %s", upload.statusCode, upload.body)
+	}
+	artifact := assertArtifactUploadJSON(t, upload.body, "report-me.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+	metadataPath := filepath.Join(dataDir, "artifacts", artifact.ID, "metadata.json")
+
+	analyze := requestJSON(t, httpRequestSpec{method: "POST", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/analyze", headers: map[string]string{"Origin": baseURL}})
+	if analyze.statusCode != http.StatusOK {
+		t.Fatalf("analyze status = %d, want 200; body = %s", analyze.statusCode, analyze.body)
+	}
+	analysis := assertArtifactAnalysisJSON(t, analyze.body, artifact)
+	metadataBefore, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("read metadata before report: %v", err)
+	}
+	aaptBefore, err := os.ReadFile(aaptMarker)
+	if err != nil {
+		t.Fatalf("read aapt marker before report: %v", err)
+	}
+
+	defaultReport := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report", headers: map[string]string{"Origin": baseURL}})
+	if defaultReport.statusCode != http.StatusOK {
+		t.Fatalf("default report status = %d, want 200; body = %s", defaultReport.statusCode, defaultReport.body)
+	}
+	if defaultReport.contentType != "application/json" {
+		t.Fatalf("default report content type = %q, want application/json", defaultReport.contentType)
+	}
+	assertArtifactReportJSON(t, defaultReport.body, artifact, analysis)
+	assertArtifactResponseNoHostPaths(t, defaultReport.body, values, dataDir)
+	assertFileBytes(t, metadataPath, metadataBefore)
+	assertFileBytes(t, aaptMarker, aaptBefore)
+
+	jsonReport := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=json", headers: map[string]string{"Origin": baseURL}})
+	if jsonReport.statusCode != http.StatusOK {
+		t.Fatalf("format=json report status = %d, want 200; body = %s", jsonReport.statusCode, jsonReport.body)
+	}
+	assertArtifactReportJSON(t, jsonReport.body, artifact, analysis)
+	assertFileBytes(t, metadataPath, metadataBefore)
+	assertFileBytes(t, aaptMarker, aaptBefore)
+
+	pendingUpload := requestArtifactUpload(t, baseURL, "pending-report.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+	if pendingUpload.statusCode != http.StatusCreated {
+		t.Fatalf("pending upload status = %d, want 201; body = %s", pendingUpload.statusCode, pendingUpload.body)
+	}
+	pending := assertArtifactUploadJSON(t, pendingUpload.body, "pending-report.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+
+	for _, test := range []struct {
+		name       string
+		request    httpRequestSpec
+		wantStatus int
+		wantCode   string
+		security   bool
+	}{
+		{name: "invalid_id", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/%5C/report", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusBadRequest, wantCode: "invalid_artifact_request"},
+		{name: "unknown_artifact", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/unknown-artifact/report", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusNotFound, wantCode: "artifact_not_found"},
+		{name: "pending_analysis", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(pending.ID) + "/report", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusConflict, wantCode: "artifact_report_unavailable"},
+		{name: "invalid_format", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=xml", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusBadRequest, wantCode: "invalid_report_format"},
+		{name: "interim_markdown_format", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=markdown", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusBadRequest, wantCode: "invalid_report_format"},
+		{name: "foreign_host", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report", host: "foreign.example"}, wantStatus: http.StatusForbidden, wantCode: "forbidden_host", security: true},
+		{name: "foreign_origin", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report", headers: map[string]string{"Origin": "http://foreign.example"}}, wantStatus: http.StatusForbidden, wantCode: "forbidden_origin", security: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := requestJSON(t, test.request)
+			if response.statusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", response.statusCode, test.wantStatus, response.body)
+			}
+			if test.security {
+				assertSecurityErrorEnvelope(t, response.body, test.wantCode)
+			} else {
+				assertAPIErrorEnvelope(t, response.body, test.wantCode)
+			}
+			assertFileBytes(t, metadataPath, metadataBefore)
+			assertFileBytes(t, aaptMarker, aaptBefore)
+		})
+	}
+
+	if err := os.WriteFile(metadataPath, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report", headers: map[string]string{"Origin": baseURL}})
+	if corrupt.statusCode != http.StatusInternalServerError {
+		t.Fatalf("corrupt metadata status = %d, want 500; body = %s", corrupt.statusCode, corrupt.body)
+	}
+	assertAPIErrorEnvelope(t, corrupt.body, "artifact_catalog_unavailable")
+	assertFileBytes(t, aaptMarker, aaptBefore)
+	assertPathAbsent(t, values["ADB_MARKER"])
+	assertPathAbsent(t, values["BROWSER_MARKER"])
+}
+
 func TestM5S4BrowserArtifactUploadAndCatalog(t *testing.T) {
 	binary := buildDashboard(t)
 
@@ -6298,6 +6416,113 @@ func assertArtifactMetadataFileWithAnalysis(t *testing.T, path string, wantArtif
 	assertArtifactDetailJSONWithAnalysis(t, content, wantArtifact, wantAnalysis)
 }
 
+func assertArtifactReportJSON(t *testing.T, body []byte, wantArtifact artifactUploadAssertion, wantAnalysis artifactAnalysisAssertion) {
+	t.Helper()
+
+	var got struct {
+		Report struct {
+			Artifact artifactUploadAssertion   `json:"artifact"`
+			Analysis artifactAnalysisAssertion `json:"analysis"`
+			Sections []reportSectionAssertion  `json:"sections"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal artifact report JSON: %v\nbody: %s", err, body)
+	}
+	wantReady := wantArtifact
+	wantReady.AnalysisStatus = "ready"
+	assertArtifactEqual(t, got.Report.Artifact, wantReady, body)
+	if !reflect.DeepEqual(got.Report.Analysis, wantAnalysis) {
+		t.Fatalf("report analysis = %#v, want %#v; body = %s", got.Report.Analysis, wantAnalysis, body)
+	}
+	if len(got.Report.Sections) != 6 {
+		t.Fatalf("report sections = %d, want 6; body = %s", len(got.Report.Sections), body)
+	}
+	wantSectionIDs := []string{"artifact", "package", "sdk", "activity", "warnings", "localNotes"}
+	wantTitles := []string{"Artifact", "Package", "SDK", "Launchable Activity", "Warnings", "Local Notes"}
+	for index, section := range got.Report.Sections {
+		if section.ID != wantSectionIDs[index] || section.Title != wantTitles[index] {
+			t.Fatalf("section[%d] = %s/%s, want %s/%s; body = %s", index, section.ID, section.Title, wantSectionIDs[index], wantTitles[index], body)
+		}
+	}
+	assertSectionItems(t, got.Report.Sections[0].Items, map[string]string{
+		"original name": wantArtifact.OriginalName,
+		"artifact ID":   wantArtifact.ID,
+		"SHA-256":       wantArtifact.SHA256,
+		"byte size":     strconv.Itoa(wantArtifact.SizeBytes),
+		"created time":  wantArtifact.CreatedAt,
+		"content type":  wantArtifact.ContentType,
+	}, body)
+	assertSectionItems(t, got.Report.Sections[1].Items, map[string]string{
+		"package name":      wantAnalysis.PackageName,
+		"tool":              wantAnalysis.Tool,
+		"analyzed time":     wantAnalysis.AnalyzedAt,
+		"version name":      wantAnalysis.VersionName,
+		"version code":      wantAnalysis.VersionCode,
+		"application label": wantAnalysis.ApplicationLabel,
+	}, body)
+	assertSectionItems(t, got.Report.Sections[2].Items, map[string]string{
+		"min SDK":    wantAnalysis.MinSDKVersion,
+		"target SDK": wantAnalysis.TargetSDKVersion,
+	}, body)
+	assertSectionItems(t, got.Report.Sections[3].Items, map[string]string{
+		"launchable activity": wantAnalysis.LaunchableActivity,
+	}, body)
+	assertSectionItems(t, got.Report.Sections[4].Items, map[string]string{
+		"warning": wantAnalysis.Warnings[0],
+	}, body)
+	assertSectionItems(t, got.Report.Sections[5].Items, map[string]string{
+		"scope": "Generated from local artifact metadata and latest ready analysis only.",
+	}, body)
+	assertKeys(t, rawJSONKeys(t, body), "report")
+	for _, forbidden := range []string{"HOME=", "ADB_DASHBOARD", "secret", "original.apk", "metadata.json", "csrfToken", "webSocketToken"} {
+		if strings.Contains(string(body), forbidden) {
+			t.Fatalf("artifact report contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+}
+
+type reportSectionAssertion struct {
+	ID    string                `json:"id"`
+	Title string                `json:"title"`
+	Items []reportItemAssertion `json:"items"`
+}
+
+type reportItemAssertion struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+func assertSectionItems(t *testing.T, got []reportItemAssertion, want map[string]string, body []byte) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("section items = %#v, want labels %#v; body = %s", got, want, body)
+	}
+	for _, item := range got {
+		if item.Value == "" {
+			t.Fatalf("section item %q has empty value; body = %s", item.Label, body)
+		}
+		if want[item.Label] != item.Value {
+			t.Fatalf("section item %q = %q, want %q; body = %s", item.Label, item.Value, want[item.Label], body)
+		}
+	}
+}
+
+func rawJSONKeys(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal JSON keys: %v\nbody: %s", err, body)
+	}
+	keys := make(map[string]any, len(got))
+	for key := range got {
+		keys[key] = nil
+	}
+	return keys
+}
+
 func rawMessageKeys(values map[string]json.RawMessage) map[string]any {
 	keys := make(map[string]any, len(values))
 	for key := range values {
@@ -6419,6 +6644,10 @@ func apiErrorMessage(code string) string {
 		return "Invalid artifact request"
 	case "artifact_delete_failed":
 		return "Artifact delete failed"
+	case "artifact_report_unavailable":
+		return "Artifact report is unavailable"
+	case "invalid_report_format":
+		return "Invalid report format"
 	default:
 		return ""
 	}

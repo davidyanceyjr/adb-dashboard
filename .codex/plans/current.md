@@ -1,65 +1,45 @@
 # Active Cycle
 
-Status: inactive
-Last cycle ID: CYCLE-20260806-M5-S6
-Last mode: feature
-Last roadmap slice: M5-S6: Explicit Artifact Deletion
-Last result: committed
-Last final phase: committed
-Last commit: `45207919bccf0aa33af6fc7599c902c5c68464f8`
-Next eligible slice: none recorded
-
-Cycle ID: CYCLE-20260806-M5-S6
+Status: active
+Cycle ID: CYCLE-20260806-M6-S1
 Mode: feature
-Goal: Implement explicit deletion for one stored APK artifact through the API and browser.
-Roadmap slice: M5-S6: Explicit Artifact Deletion
-Branch or work context: `main` at `a60a3fc`; working tree clean before cycle edits; local branch ahead of `origin/main` by 2 commits.
-Specification anchors: `CAP-021`, `AC-021-001`, `AC-021-002`, `AC-021-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`, `DATA-006`, `DATA-007`
-Acceptance criteria: `AC-021-001`, `AC-021-002`, `AC-021-003`
-Acceptance boundary: HTTP request and deterministic browser-shell interaction through the running server with isolated artifact storage.
-In scope: `DELETE /api/v1/artifacts/{artifactId}`; scoped deletion of one artifact directory; invalid ID, unknown artifact, deletion failure, symlink/path escape, and security rejection behavior; browser delete action and catalog refresh.
-Out of scope: bulk deletion, retention schedules, background cleanup jobs, install, external services, reports, unrelated storage migrations, and commits.
-Focused test command: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM5S6ExplicitArtifactDeletion'`
-Real-path command or procedure: Build the real binary, start `serve --listen 127.0.0.1:0 --data-dir <isolated> --no-open`, upload disposable APK artifacts, delete through API and browser, inspect catalog/detail responses and filesystem side effects, repeat invalid ID, unknown ID, symlink/path escape, and rejected Host/Origin cases.
-Broad verification commands: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...`; `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...`; `git diff --check`
+Goal: Implement the M6-S1 artifact report JSON API.
+Roadmap slice: M6-S1: Artifact Report JSON API
+Branch or work context: `main`; pre-existing uncommitted documentation/state changes were present in `.codex/cycles/history.md`, `.codex/plans/current.md`, `docs/SPECIFICATION.md`, and `docs/roadmap.md` before M6-S1 code edits.
+Specification anchors: `CAP-022`, `AC-022-001`, JSON and negative-path subset of `AC-022-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`, `DATA-006`, `DATA-007`
+Acceptance criteria: `AC-022-001`; `AC-022-003` for absent `format`, `format=json`, invalid artifact ID, invalid format including interim `format=markdown`, unknown artifact ID, no ready analysis, corrupt metadata, and rejected Host or Origin.
+Acceptance boundary: HTTP request through the running server with isolated artifact storage and deterministic stored analysis metadata.
+In scope: `GET /api/v1/artifacts/{artifactId}/report`; absent `format` and `format=json` JSON success; invalid format and interim `format=markdown` as `400 invalid_report_format`; invalid ID, unknown artifact, no ready analysis, corrupt metadata, and Host/Origin rejection; report sections derived from stored metadata and latest ready analysis; read-only proof for metadata and fake host-tool logs.
+Out of scope: Markdown report success, browser report UI, browser export action, retained report files, report indexes, report comparison, signing verification, malware analysis, install, device mutation, external services, and background jobs.
+Focused test command: `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1`
+Real-path command or procedure: Next Test gate should use the focused process/HTTP test evidence and, if needed, manually start the built server with isolated artifact storage, upload/analyze with fake `aapt`, request `/report` and `/report?format=json`, then inspect response bodies, metadata bytes, and fake-tool logs.
+Broad verification commands: `go test ./... -count=1`; `go vet ./...`; `go build ./cmd/adb-dashboard`; `git diff --check`
 Current gate: Review
-Current phase: committed
+Current phase: ready
 Blocker: none
-Next phase: none
+Next phase: commit if authorized.
 
 ## Phase Results
-
-Phase: resume
-Result: RESUME READY
-Evidence:
-- `git status --short --branch` reported `## main...origin/main [ahead 2]` with no uncommitted files.
-- `.codex/plans/current.md` recorded inactive state after `CYCLE-20260805-M5-S5`, last result `committed`, last commit `061671b2e803d908981bf68c5d158656e655615d`, and next eligible slice `M5-S6`.
-- `git log --oneline -5 --decorate` showed `a60a3fc (HEAD -> main) Record M5-S5 cycle closure`, `061671b Add browser artifact analysis view`, and `67c4dd7 (origin/main, origin/HEAD) chore: record m5 s4 cycle commit`.
-- `git diff --stat && git diff --name-only` produced no output.
-Changed:
-- none
-Next: discovery
-Blocker: none
 
 Phase: discovery
 Result: DISCOVERY READY
 Evidence:
-- Read root `AGENTS.md`, `docs/SPECIFICATION.md`, `docs/roadmap.md`, `docs/IMPLEMENTATION_CYCLE_GUIDE.md`, `docs/READINESS_CHECKLIST.md`, and relevant production/test files.
-- `docs/roadmap.md` header still says `Next eligible slice: M5-S2`, but slice statuses and the active plan show M5-S5 was committed and M5-S6 is next; selected M5-S6 from the active handoff.
-- M5-S6 depends on M5-S5; local commits include the M5-S5 implementation and cycle closure.
+- Read `.agents/skills/implementation-cycle/SKILL.md`, `AGENTS.md`, `docs/SPECIFICATION.md`, `docs/roadmap.md`, `.codex/plans/current.md`, `README.md`, `docs/READINESS_CHECKLIST.md`, `docs/SPECIFICATION_GUIDE.md`, `docs/ROADMAP_GUIDE.md`, and `docs/IMPLEMENTATION_CYCLE_GUIDE.md`.
+- `git status --short --branch` reported `## main...origin/main` with pre-existing modified files: `.codex/cycles/history.md`, `.codex/plans/current.md`, `docs/SPECIFICATION.md`, and `docs/roadmap.md`.
+- `docs/roadmap.md` identified `M6-S1` as next eligible accepted slice.
+- `go test ./...` exited `0` before M6-S1 edits: `ok adb-dashboard/tests/cli 145.745s`.
 Changed:
-- `.codex/plans/current.md`
+- none
 Next: contract
 Blocker: none
 
 Phase: contract
 Result: CONTRACT READY
 Evidence:
-- `CAP-021` defines `DELETE /api/v1/artifacts/{artifactId}` for opaque artifact IDs returned by `CAP-018`, HTTP `200` with `artifact.id` and `deleted: true`, scoped deletion of the selected artifact file and metadata under `server.data_dir`, and repeated deletion as `artifact_not_found`.
-- `AC-021-001` requires confirmation, catalog absence, and removal of only the selected artifact directory.
-- `AC-021-002` requires invalid ID, unknown ID, filesystem deletion failure, rejected Host/Origin, and no unrelated removals.
-- `AC-021-003` requires browser delete refresh with unsupported mutation/install/shell/file-transfer/external-service controls absent.
-- Primary boundary is HTTP request and deterministic browser-shell interaction through the running server with isolated artifact storage.
+- `CAP-022` defines `GET /api/v1/artifacts/{artifactId}/report`, default JSON format, `format=json`, read-only report generation from stored artifact metadata and latest ready analysis, and no report-time `adb` or `aapt` execution.
+- `AC-022-001` covers JSON report success with no writes, no host-tool execution, and no sensitive/path disclosure.
+- M6-S1 owns the `AC-022-003` negative paths for invalid artifact ID, invalid format including interim `format=markdown`, unknown artifact ID, no ready analysis, corrupt metadata, and rejected Host or Origin.
+- Primary acceptance boundary is HTTP through the running server with isolated artifact storage.
 Changed:
 - none
 Next: red
@@ -68,9 +48,9 @@ Blocker: none
 Phase: red
 Result: RED CONFIRMED
 Evidence:
-- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM5S6ExplicitArtifactDeletion'` exited `1`.
-- API subtest reached the running server and failed because the delete route was absent: invalid DELETE returned the generic unknown-route envelope instead of `invalid_artifact_request`.
-- Browser subtest reached the running server and failed because the rendered shell did not include `artifact-delete-status=delete: deleted`; catalog still showed `artifacts: 1` and `browser-delete.apk`.
+- Added `TestM6S1ArtifactReportJSONAPI` to exercise upload, analysis, report success, negative paths, metadata stability, fake-tool log stability, and sensitive output checks through production HTTP routes.
+- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` first failed to compile because test support omitted `strconv`; fixed the test support import.
+- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` then exited `1` with intended boundary failure: default report request returned HTTP `404` with body `{"error":{"code":"artifact_not_found","message":"Artifact not found","details":{},"requestId":null}}` instead of HTTP `200`.
 Changed:
 - `tests/cli/m1_s1_cli_test.go`
 Next: build
@@ -79,79 +59,80 @@ Blocker: none
 Phase: build
 Result: BUILD APPLIED
 Evidence:
-- Added `DELETE /api/v1/artifacts/{artifactId}` under the existing artifact route, returning HTTP `200` with `artifact.id` and `deleted: true` after scoped removal.
-- Added invalid ID handling with `400 invalid_artifact_request`, unknown artifact handling with `404 artifact_not_found`, delete failure handling with `500 artifact_delete_failed`, metadata verification before deletion, `filepath.Rel` scope validation, `os.RemoveAll` for only the selected artifact directory, and post-delete absence verification.
-- Added browser delete control and status, using the production DELETE route and refreshing catalog/detail/analysis visible state after deletion.
-- `gofmt -w cmd/adb-dashboard/main.go tests/cli/m1_s1_cli_test.go` exited `0`.
-- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM5S6ExplicitArtifactDeletion'` exited `0`; rerun after adding delete-failure coverage also exited `0`.
+- Implemented production route dispatch for `GET /api/v1/artifacts/{artifactId}/report`.
+- Implemented JSON report response with `report.artifact`, `report.analysis`, and ordered `report.sections` derived from stored metadata and stored ready analysis.
+- Implemented M6-S1 format handling: absent `format` and `format=json` succeed; `format=markdown` and other values return `400 invalid_report_format`.
+- Implemented invalid ID `400 invalid_artifact_request`, unknown artifact `404 artifact_not_found`, no ready analysis `409 artifact_report_unavailable`, and corrupt metadata `500 artifact_catalog_unavailable`.
+- Report generation uses existing metadata reads and does not execute host tools or write metadata.
 Changed:
 - `cmd/adb-dashboard/main.go`
-- `tests/cli/m1_s1_cli_test.go`
-Next: green
-Blocker: none
-
-Phase: green
-Result: GREEN VERIFIED
-Evidence:
-- Focused test: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM5S6ExplicitArtifactDeletion'` exited `0`; final run reported `ok adb-dashboard/tests/cli 4.204s`.
-- Real path: the focused test built the real binary, started `serve --listen 127.0.0.1:0 --data-dir <isolated> --no-open`, uploaded disposable APK fixtures through HTTP and browser harness paths, deleted through the API and browser, inspected catalog/detail responses, verified the selected artifact directory was removed, verified another artifact directory remained, verified an outside symlink target was preserved, verified invalid ID, delete failure, rejected Host/Origin, and repeated delete behavior, and confirmed browser catalog refresh cleared stale artifact text.
-- Adjacent artifact browser check: `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./tests/cli -run 'TestM5S4BrowserArtifactUploadAndCatalog|TestM5S5BrowserArtifactAnalysisView|TestM5S6ExplicitArtifactDeletion'` exited `0`; reported `ok adb-dashboard/tests/cli 32.389s`.
-Changed:
-- none
 Next: documentation
 Blocker: none
 
 Phase: documentation
 Result: DOCS SYNCED
 Evidence:
-- `docs/MANUAL_TESTING.md` scope now names M5-S6 and includes browser delete expectations plus `DELETE /api/v1/artifacts/{artifactId}` success and negative checks.
-- Documentation examples are curl/manual procedures; no separate documentation validation command exists.
+- Read `.agents/skills/cycle-document/SKILL.md`.
+- Updated `docs/MANUAL_TESTING.md` scope through `M6-S1`.
+- Added manual JSON report API checks for default JSON, `format=json`, read-only metadata behavior, no report-time `adb`/`aapt`, invalid format including interim `format=markdown`, unknown artifact, no ready analysis, corrupt metadata, and Host/Origin rejection.
 Changed:
 - `docs/MANUAL_TESTING.md`
-Next: broad checks
+Next: implementation-ready-for-test
 Blocker: none
 
-Phase: broad checks
-Result: BROAD CHECKS PASSED
+Phase: implementation-ready-for-test
+Result: IMPLEMENTATION READY FOR TEST
 Evidence:
-- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go test -count=1 ./...` exited `0`; final run reported `ok adb-dashboard/tests/cli 146.794s`.
-- `GOPATH=$PWD/.codex/cache/go-path GOCACHE=$PWD/.codex/cache/go-build go vet ./...` exited `0`.
+- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.424s`.
 - `git diff --check` exited `0`.
+- `go test ./... -count=1` exited `0`: `? adb-dashboard/cmd/adb-dashboard [no test files]`; `ok adb-dashboard/tests/cli 145.901s`.
+- `go vet ./...` exited `0`.
+- `go build ./cmd/adb-dashboard` exited `0`.
 Changed:
-- none
-Next: review
+- `.codex/plans/current.md`
+Next: Test gate focused-green, real-path exercise, negative paths, broad checks.
+Blocker: none
+
+Phase: green
+Result: GREEN VERIFIED
+Evidence:
+- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.344s`.
+- Focused process/HTTP test exercised the real M6-S1 path through the running server: upload APK, analyze with fake `aapt`, request `/api/v1/artifacts/{artifactId}/report` and `?format=json`, inspect JSON report body and content type, prove metadata bytes and fake-tool marker stayed unchanged after report requests, and repeat invalid ID, unknown artifact, no ready analysis, invalid `format`, interim `format=markdown`, rejected Host, rejected Origin, and corrupt metadata cases.
+- `go vet ./...` exited `0`.
+- `go build ./cmd/adb-dashboard` exited `0`; removed the generated local `adb-dashboard` binary after verification.
+- `git diff --check` exited `0`.
+- First `go test ./... -count=1` exited `1` after `TestM3S1BrowserRefreshAndDeviceDetailView/refreshes_and_opens_detail_without_sensitive_or_unsupported_output` observed fake ADB invocation log `version\nversion\ndevices -l\nversion\nversion\ndevices -l\ndevices -l\n`, expected `version\nversion\ndevices -l\nversion\ndevices -l\nversion\ndevices -l\n`; failure was outside M6-S1 report behavior.
+- `go test ./tests/cli -run TestM3S1BrowserRefreshAndDeviceDetailView -count=1` exited `0`: `ok adb-dashboard/tests/cli 8.476s`.
+- Retry `go test ./... -count=1` exited `0`: `? adb-dashboard/cmd/adb-dashboard [no test files]`; `ok adb-dashboard/tests/cli 146.535s`.
+Changed:
+- `.codex/plans/current.md`
+Next: Review gate diff-review, evidence-review, docs-review.
 Blocker: none
 
 Phase: review
 Result: REVIEW PASSED
 Evidence:
-- `AC-021-001` covered by API deletion returning `deleted: true`, deleted artifact absence from catalog/detail, removed selected directory, and preserved second artifact directory.
-- `AC-021-002` covered by invalid ID `400 invalid_artifact_request`, corrupt metadata/delete-failure `500 artifact_delete_failed`, repeated delete `404 artifact_not_found`, rejected Host/Origin `403`, preserved non-selected artifact directory, and preserved symlink target outside artifact storage.
-- `AC-021-003` covered by browser upload/delete through production routes, `delete: deleted`, refreshed empty catalog, cleared stale detail, and absence of install/device mutation/shell/file-transfer/external-service controls.
-- Diff is limited to M5-S6 artifact deletion production path, focused process/browser tests, manual testing documentation, active cycle state, and cycle history.
-- No placeholders, fabricated success paths, test-only production hooks, new dependencies, external network calls, ADB/device mutation, host-tool execution, bulk deletion, or unrelated refactors were found.
+- `AC-022-001` is traced to the production `GET /api/v1/artifacts/{artifactId}/report` route, JSON report assembly from stored metadata and stored ready analysis, focused HTTP assertions for absent `format` and `format=json`, content type, top-level `report`, ordered sections, metadata byte stability, fake `aapt` log stability, and sensitive/path omission checks.
+- `AC-022-003` M6-S1 subset is traced to focused HTTP assertions for invalid ID `400 invalid_artifact_request`, invalid `format` and interim `format=markdown` as `400 invalid_report_format`, unknown artifact `404 artifact_not_found`, no ready analysis `409 artifact_report_unavailable`, corrupt metadata `500 artifact_catalog_unavailable`, rejected Host `403 forbidden_host`, and rejected Origin `403 forbidden_origin`.
+- Review rerun `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.375s`.
+- Review rerun `go vet ./...` exited `0`.
+- Review rerun `go build ./cmd/adb-dashboard` exited `0`; removed generated local `adb-dashboard` binary.
+- Review rerun `go test ./... -count=1` exited `0`: `? adb-dashboard/cmd/adb-dashboard [no test files]`; `ok adb-dashboard/tests/cli 146.719s`.
+- `git diff --check` exited `0`.
+- Diff review found the M6-S1 production change limited to report route dispatch and read-only report generation; focused tests cover the production HTTP boundary; manual testing docs are synchronized; no placeholders, fabricated success paths, test-only production hooks, new dependencies, external network calls, ADB/device mutation, `aapt` execution during report generation, report-file writes, or unrelated production refactors were found.
+- Pre-existing uncommitted M6 specification, roadmap, cycle history, and active-plan edits remain present as recorded in discovery; they are governing/pre-existing context and were not treated as M6-S1 production changes.
 Changed:
-- none
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
 Next: ready
 Blocker: none
 
 Phase: ready
 Result: CYCLE READY
 Evidence:
-- M5-S6 passed review with focused, real-path, negative-path, documentation, and broad-check evidence.
-- Implementation commit created after user authorization: `45207919bccf0aa33af6fc7599c902c5c68464f8`.
+- M6-S1 passed review with focused process/HTTP, negative-path, read-only filesystem/tool-log, documentation, and broad-check evidence.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
-Next: committed
-Blocker: none
-
-Phase: committed
-Result: COMMITTED
-Evidence:
-- `git commit -m "Add explicit artifact deletion"` created commit `45207919bccf0aa33af6fc7599c902c5c68464f8`.
-Changed:
-- `.codex/plans/current.md`
-- `.codex/cycles/history.md`
-Next: push
+Next: commit if authorized
 Blocker: none
