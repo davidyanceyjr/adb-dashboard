@@ -1,6 +1,14 @@
 # Active Cycle
 
-Status: active
+Status: inactive
+Last cycle ID: CYCLE-20260806-M6-S1
+Last mode: feature
+Last roadmap slice: M6-S1: Artifact Report JSON API
+Last result: committed
+Last final phase: committed
+Last commit: `bfa16fb95121361ec3f26740dcb157c46907cbd1`
+Next eligible slice: M6-S2
+
 Cycle ID: CYCLE-20260806-M6-S1
 Mode: feature
 Goal: Implement the M6-S1 artifact report JSON API.
@@ -15,9 +23,9 @@ Focused test command: `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -c
 Real-path command or procedure: Next Test gate should use the focused process/HTTP test evidence and, if needed, manually start the built server with isolated artifact storage, upload/analyze with fake `aapt`, request `/report` and `/report?format=json`, then inspect response bodies, metadata bytes, and fake-tool logs.
 Broad verification commands: `go test ./... -count=1`; `go vet ./...`; `go build ./cmd/adb-dashboard`; `git diff --check`
 Current gate: Review
-Current phase: ready
+Current phase: committed
 Blocker: none
-Next phase: commit if authorized.
+Next phase: none
 
 ## Phase Results
 
@@ -134,5 +142,15 @@ Evidence:
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
-Next: commit if authorized
+Next: commit
+Blocker: none
+
+Phase: committed
+Result: COMMITTED
+Evidence:
+- `git commit -m "Add artifact JSON report API"` created commit `bfa16fb95121361ec3f26740dcb157c46907cbd1`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: none
 Blocker: none
