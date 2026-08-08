@@ -4112,7 +4112,6 @@ printf "WARNING: duplicate resource\n"
 		{name: "unknown_artifact", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/unknown-artifact/report", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusNotFound, wantCode: "artifact_not_found"},
 		{name: "pending_analysis", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(pending.ID) + "/report", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusConflict, wantCode: "artifact_report_unavailable"},
 		{name: "invalid_format", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=xml", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusBadRequest, wantCode: "invalid_report_format"},
-		{name: "interim_markdown_format", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=markdown", headers: map[string]string{"Origin": baseURL}}, wantStatus: http.StatusBadRequest, wantCode: "invalid_report_format"},
 		{name: "foreign_host", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report", host: "foreign.example"}, wantStatus: http.StatusForbidden, wantCode: "forbidden_host", security: true},
 		{name: "foreign_origin", request: httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report", headers: map[string]string{"Origin": "http://foreign.example"}}, wantStatus: http.StatusForbidden, wantCode: "forbidden_origin", security: true},
 	} {
@@ -4139,6 +4138,90 @@ printf "WARNING: duplicate resource\n"
 		t.Fatalf("corrupt metadata status = %d, want 500; body = %s", corrupt.statusCode, corrupt.body)
 	}
 	assertAPIErrorEnvelope(t, corrupt.body, "artifact_catalog_unavailable")
+	assertFileBytes(t, aaptMarker, aaptBefore)
+	assertPathAbsent(t, values["ADB_MARKER"])
+	assertPathAbsent(t, values["BROWSER_MARKER"])
+}
+
+func TestM6S2ArtifactReportMarkdownAPI(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+	aaptMarker := filepath.Join(values["TMPDIR"], "report-markdown-aapt-invoked")
+	env = append(env, "AAPT_MARKER="+aaptMarker)
+	writeFakeAAPT(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+if [ "$1" != "dump" ] || [ "$2" != "badging" ]; then
+  printf 'unexpected argv\n' >&2
+  exit 7
+fi
+printf "package: name='com.example.ready' versionCode='42' versionName='1.2.3'\n"
+printf "sdkVersion:'23'\n"
+printf "targetSdkVersion:'35'\n"
+printf "application-label:'Example App'\n"
+printf "launchable-activity: name='com.example.ready.MainActivity'\n"
+printf "WARNING: duplicate resource\n"
+`)
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+	defer server.cleanup(t)
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+
+	apk := apkLikeZip(t)
+	wantSHA := sha256.Sum256(apk)
+	upload := requestArtifactUpload(t, baseURL, "markdown-report.apk", "application/vnd.android.package-archive", apk, map[string]string{"Origin": baseURL})
+	if upload.statusCode != http.StatusCreated {
+		t.Fatalf("upload status = %d, want 201; body = %s", upload.statusCode, upload.body)
+	}
+	artifact := assertArtifactUploadJSON(t, upload.body, "markdown-report.apk", len(apk), hex.EncodeToString(wantSHA[:]), "application/vnd.android.package-archive")
+	metadataPath := filepath.Join(dataDir, "artifacts", artifact.ID, "metadata.json")
+
+	analyze := requestJSON(t, httpRequestSpec{method: "POST", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/analyze", headers: map[string]string{"Origin": baseURL}})
+	if analyze.statusCode != http.StatusOK {
+		t.Fatalf("analyze status = %d, want 200; body = %s", analyze.statusCode, analyze.body)
+	}
+	analysis := assertArtifactAnalysisJSON(t, analyze.body, artifact)
+	metadataBefore, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatalf("read metadata before markdown report: %v", err)
+	}
+	aaptBefore, err := os.ReadFile(aaptMarker)
+	if err != nil {
+		t.Fatalf("read aapt marker before markdown report: %v", err)
+	}
+
+	markdown := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=markdown", headers: map[string]string{"Origin": baseURL}})
+	if markdown.statusCode != http.StatusOK {
+		t.Fatalf("markdown report status = %d, want 200; body = %s", markdown.statusCode, markdown.body)
+	}
+	if markdown.contentType != "text/markdown" {
+		t.Fatalf("markdown report content type = %q, want text/markdown", markdown.contentType)
+	}
+	assertArtifactReportMarkdown(t, markdown.body, artifact, analysis)
+	assertArtifactResponseNoHostPaths(t, markdown.body, values, dataDir)
+	assertFileBytes(t, metadataPath, metadataBefore)
+	assertFileBytes(t, aaptMarker, aaptBefore)
+
+	invalid := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=xml", headers: map[string]string{"Origin": baseURL}})
+	if invalid.statusCode != http.StatusBadRequest {
+		t.Fatalf("invalid format status = %d, want 400; body = %s", invalid.statusCode, invalid.body)
+	}
+	assertAPIErrorEnvelope(t, invalid.body, "invalid_report_format")
+	assertFileBytes(t, metadataPath, metadataBefore)
+	assertFileBytes(t, aaptMarker, aaptBefore)
+
+	foreignHost := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=markdown", host: "foreign.example"})
+	if foreignHost.statusCode != http.StatusForbidden {
+		t.Fatalf("foreign host status = %d, want 403; body = %s", foreignHost.statusCode, foreignHost.body)
+	}
+	assertSecurityErrorEnvelope(t, foreignHost.body, "forbidden_host")
+	foreignOrigin := requestJSON(t, httpRequestSpec{method: "GET", url: baseURL + "/api/v1/artifacts/" + url.PathEscape(artifact.ID) + "/report?format=markdown", headers: map[string]string{"Origin": "http://foreign.example"}})
+	if foreignOrigin.statusCode != http.StatusForbidden {
+		t.Fatalf("foreign origin status = %d, want 403; body = %s", foreignOrigin.statusCode, foreignOrigin.body)
+	}
+	assertSecurityErrorEnvelope(t, foreignOrigin.body, "forbidden_origin")
+	assertFileBytes(t, metadataPath, metadataBefore)
 	assertFileBytes(t, aaptMarker, aaptBefore)
 	assertPathAbsent(t, values["ADB_MARKER"])
 	assertPathAbsent(t, values["BROWSER_MARKER"])
@@ -6478,6 +6561,54 @@ func assertArtifactReportJSON(t *testing.T, body []byte, wantArtifact artifactUp
 	for _, forbidden := range []string{"HOME=", "ADB_DASHBOARD", "secret", "original.apk", "metadata.json", "csrfToken", "webSocketToken"} {
 		if strings.Contains(string(body), forbidden) {
 			t.Fatalf("artifact report contains forbidden text %q: %s", forbidden, body)
+		}
+	}
+}
+
+func assertArtifactReportMarkdown(t *testing.T, body []byte, wantArtifact artifactUploadAssertion, wantAnalysis artifactAnalysisAssertion) {
+	t.Helper()
+
+	text := string(body)
+	wantOrdered := []string{
+		"# Artifact Report",
+		"## Artifact",
+		"- original name: " + wantArtifact.OriginalName,
+		"- artifact ID: " + wantArtifact.ID,
+		"- SHA-256: " + wantArtifact.SHA256,
+		"- byte size: " + strconv.Itoa(wantArtifact.SizeBytes),
+		"- created time: " + wantArtifact.CreatedAt,
+		"- content type: " + wantArtifact.ContentType,
+		"## Package",
+		"- package name: " + wantAnalysis.PackageName,
+		"- tool: " + wantAnalysis.Tool,
+		"- analyzed time: " + wantAnalysis.AnalyzedAt,
+		"- version name: " + wantAnalysis.VersionName,
+		"- version code: " + wantAnalysis.VersionCode,
+		"- application label: " + wantAnalysis.ApplicationLabel,
+		"## SDK",
+		"- min SDK: " + wantAnalysis.MinSDKVersion,
+		"- target SDK: " + wantAnalysis.TargetSDKVersion,
+		"## Launchable Activity",
+		"- launchable activity: " + wantAnalysis.LaunchableActivity,
+		"## Warnings",
+		"- warning: " + wantAnalysis.Warnings[0],
+		"## Local Notes",
+		"- scope: Generated from local artifact metadata and latest ready analysis only.",
+	}
+	last := -1
+	for _, want := range wantOrdered {
+		index := strings.Index(text, want)
+		if index == -1 {
+			t.Fatalf("markdown report missing %q:\n%s", want, body)
+		}
+		if index <= last {
+			t.Fatalf("markdown report puts %q out of order:\n%s", want, body)
+		}
+		last = index
+	}
+	for _, forbidden := range []string{"HOME=", "ADB_DASHBOARD", "secret", "original.apk", "metadata.json", "csrfToken", "webSocketToken", "unexpected argv"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("markdown report contains forbidden text %q:\n%s", forbidden, body)
 		}
 	}
 }

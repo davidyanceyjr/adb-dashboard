@@ -3,13 +3,13 @@
 ## Scope
 
 These steps exercise the current implementation level through
-`M6-S1`: local CLI behavior, configuration and startup checks, loopback server
+`M6-S2`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
 read-only package inventory API/browser behavior plus package detail API
 behavior and local APK artifact upload, catalog, detail, analysis API, and
-browser analysis and deletion behavior, plus local artifact JSON report API
-behavior.
+browser analysis and deletion behavior, plus local artifact JSON and Markdown
+report API behavior.
 
 ## Requirements
 
@@ -921,7 +921,7 @@ Expected result:
   false ready result.
 - Rejected Host or Origin requests return HTTP `403` before `aapt` is invoked.
 
-## Artifact JSON Report API
+## Artifact Report API
 
 After an artifact has ready analysis, request the JSON report:
 
@@ -955,12 +955,27 @@ Expected result:
   `original.apk`, `metadata.json`, command stderr, environment values, or token
   values.
 
-Check report negative behavior:
+Request the Markdown report:
 
 ```sh
 curl -i -sS -H "Origin: http://$ADDR" \
   "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/report?format=markdown"
+```
 
+Expected result:
+
+- The report request returns HTTP `200` with `Content-Type: text/markdown`.
+- The Markdown document contains the same semantic sections and values as the
+  JSON `report.sections`, plus the artifact name, artifact ID, SHA-256, byte
+  size, package name, version fields when present, SDK fields when present,
+  application label when present, launchable activity when present, warning
+  lines when present, and the local-only note.
+- Markdown report generation has the same read-only and sensitive-output
+  constraints as JSON report generation.
+
+Check report negative behavior:
+
+```sh
 curl -i -sS -H "Origin: http://$ADDR" \
   "http://$ADDR/api/v1/artifacts/$ARTIFACT_ID/report?format=xml"
 
@@ -973,8 +988,8 @@ curl -i -sS -H "Host: foreign.example" \
 
 Expected result:
 
-- `format=markdown` and other non-`json` formats return HTTP `400` with code
-  `invalid_report_format`; Markdown success is not implemented until `M6-S2`.
+- Unsupported `format` values other than `json` or `markdown` return HTTP
+  `400` with code `invalid_report_format`.
 - Unknown artifact IDs return HTTP `404` with code `artifact_not_found`.
 - Existing artifacts without ready analysis return HTTP `409` with code
   `artifact_report_unavailable`.

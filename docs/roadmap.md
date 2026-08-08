@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.4.0
 - Current milestone: M6
-- Next eligible slice: M6-S1
+- Next eligible slice: M6-S3
 - Last reviewed: 2026-08-06
 
 This roadmap selects implementation order for the accepted local bootstrap,
@@ -1464,7 +1464,7 @@ Every implementation slice must:
 
 ### Slice M6-S1: Artifact Report JSON API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Generate a read-only JSON report for one analyzed artifact from
   stored artifact metadata and latest ready analysis.
@@ -1541,7 +1541,7 @@ Every implementation slice must:
 
 ### Slice M6-S2: Artifact Report Markdown API
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Change `format=markdown` from the M6-S1 interim format error to a
   successful Markdown report without introducing retained report files.

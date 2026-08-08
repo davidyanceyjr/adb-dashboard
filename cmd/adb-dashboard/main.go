@@ -1929,7 +1929,7 @@ func handleArtifactReport(writer http.ResponseWriter, request *http.Request, dat
 		return
 	}
 	format, ok := parseArtifactReportFormat(request.URL.Query())
-	if !ok || format != "json" {
+	if !ok {
 		writeAPIError(writer, http.StatusBadRequest, "invalid_report_format", "Invalid report format")
 		return
 	}
@@ -1953,6 +1953,10 @@ func handleArtifactReport(writer http.ResponseWriter, request *http.Request, dat
 		Analysis: *stored.Analysis,
 	}
 	report.Sections = artifactReportSections(report.Artifact, report.Analysis)
+	if format == "markdown" {
+		writeMarkdown(writer, artifactReportMarkdown(report))
+		return
+	}
 	writeJSON(writer, http.StatusOK, artifactReportResponse{Report: report})
 }
 
@@ -1964,7 +1968,7 @@ func parseArtifactReportFormat(values url.Values) (string, bool) {
 		}
 		format = formatValues[0]
 	}
-	return format, format == "json"
+	return format, format == "json" || format == "markdown"
 }
 
 func artifactReportSections(artifact artifactMetadata, analysis artifactAnalysis) []artifactSection {
@@ -2042,6 +2046,27 @@ func warningReportItems(warnings []string) []artifactItem {
 		}
 	}
 	return items
+}
+
+func artifactReportMarkdown(report artifactReport) string {
+	var builder strings.Builder
+	builder.WriteString("# Artifact Report\n\n")
+	builder.WriteString(report.Artifact.OriginalName)
+	builder.WriteString("\n\n")
+	for _, section := range report.Sections {
+		builder.WriteString("## ")
+		builder.WriteString(section.Title)
+		builder.WriteString("\n\n")
+		for _, item := range section.Items {
+			builder.WriteString("- ")
+			builder.WriteString(item.Label)
+			builder.WriteString(": ")
+			builder.WriteString(item.Value)
+			builder.WriteString("\n")
+		}
+		builder.WriteString("\n")
+	}
+	return builder.String()
 }
 
 func handleArtifactDelete(writer http.ResponseWriter, request *http.Request, dataDir string) {
@@ -2587,6 +2612,12 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
 	_ = encoder.Encode(value)
+}
+
+func writeMarkdown(writer http.ResponseWriter, body string) {
+	writer.Header().Set("Content-Type", "text/markdown")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte(body))
 }
 
 func writeHTML(writer http.ResponseWriter, body string) {
