@@ -1,26 +1,26 @@
 # Active Cycle
 
 Status: inactive
-Last cycle ID: CYCLE-20260806-M6-S1
+Last cycle ID: CYCLE-20260808-M6-S2
 Last mode: feature
-Last roadmap slice: M6-S1: Artifact Report JSON API
+Last roadmap slice: M6-S2: Artifact Report Markdown API
 Last result: committed
 Last final phase: committed
-Last commit: `bfa16fb95121361ec3f26740dcb157c46907cbd1`
-Next eligible slice: M6-S2
+Last commit: `2ffc4db4708b6d73080a7d23787b0991eb0b1846`
+Next eligible slice: M6-S3
 
-Cycle ID: CYCLE-20260806-M6-S1
+Cycle ID: CYCLE-20260808-M6-S2
 Mode: feature
-Goal: Implement the M6-S1 artifact report JSON API.
-Roadmap slice: M6-S1: Artifact Report JSON API
-Branch or work context: `main`; pre-existing uncommitted documentation/state changes were present in `.codex/cycles/history.md`, `.codex/plans/current.md`, `docs/SPECIFICATION.md`, and `docs/roadmap.md` before M6-S1 code edits.
-Specification anchors: `CAP-022`, `AC-022-001`, JSON and negative-path subset of `AC-022-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`, `DATA-006`, `DATA-007`
-Acceptance criteria: `AC-022-001`; `AC-022-003` for absent `format`, `format=json`, invalid artifact ID, invalid format including interim `format=markdown`, unknown artifact ID, no ready analysis, corrupt metadata, and rejected Host or Origin.
+Goal: Implement the M6-S2 artifact report Markdown API.
+Roadmap slice: M6-S2: Artifact Report Markdown API
+Branch or work context: `main`; branch was ahead of `origin/main` by 2 commits before M6-S2 commits. Pre-existing handoff edit in `.codex/plans/current.md` was present before M6-S2 edits.
+Specification anchors: `CAP-022`, `AC-022-002`, M6-S2 preservation subset of `AC-022-003`, `INV-SEC-001`, `INV-SEC-003`, `INV-DATA-004`, `DATA-006`, `DATA-007`
+Acceptance criteria: `AC-022-002`; preserve `AC-022-003` invalid `format` behavior for non-Markdown invalid values and rejected Host or Origin before side effects.
 Acceptance boundary: HTTP request through the running server with isolated artifact storage and deterministic stored analysis metadata.
-In scope: `GET /api/v1/artifacts/{artifactId}/report`; absent `format` and `format=json` JSON success; invalid format and interim `format=markdown` as `400 invalid_report_format`; invalid ID, unknown artifact, no ready analysis, corrupt metadata, and Host/Origin rejection; report sections derived from stored metadata and latest ready analysis; read-only proof for metadata and fake host-tool logs.
-Out of scope: Markdown report success, browser report UI, browser export action, retained report files, report indexes, report comparison, signing verification, malware analysis, install, device mutation, external services, and background jobs.
-Focused test command: `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1`
-Real-path command or procedure: Next Test gate should use the focused process/HTTP test evidence and, if needed, manually start the built server with isolated artifact storage, upload/analyze with fake `aapt`, request `/report` and `/report?format=json`, then inspect response bodies, metadata bytes, and fake-tool logs.
+In scope: `GET /api/v1/artifacts/{artifactId}/report?format=markdown`; `Content-Type: text/markdown`; Markdown semantic sections from stored metadata and latest ready analysis; preservation of invalid non-Markdown format errors; Host/Origin rejection; read-only proof for metadata and fake host-tool logs.
+Out of scope: Browser report UI, browser export action, downloaded filename policy, retained report files, report comparison, signing verification, malware analysis, install, device mutation, external services, and background jobs.
+Focused test command: `go test ./tests/cli -run 'TestM6S(1ArtifactReportJSONAPI|2ArtifactReportMarkdownAPI)' -count=1`
+Real-path command or procedure: Focused process/HTTP test starts the built server with isolated artifact storage, uploads/analyzes an APK through production routes using fake `aapt`, requests `format=markdown`, inspects status, content type, semantic content, metadata bytes, fake-tool logs, invalid `format`, rejected Host, and rejected Origin.
 Broad verification commands: `go test ./... -count=1`; `go vet ./...`; `go build ./cmd/adb-dashboard`; `git diff --check`
 Current gate: Review
 Current phase: committed
@@ -29,13 +29,33 @@ Next phase: none
 
 ## Phase Results
 
+Phase: resume
+Result: RESUME READY
+Evidence:
+- Read `.agents/skills/cycle-handoff/SKILL.md`, `.agents/skills/implementation-cycle/SKILL.md`, `AGENTS.md`, `.codex/plans/current.md`, `docs/SPECIFICATION.md`, `docs/roadmap.md`, and `docs/IMPLEMENTATION_CYCLE_GUIDE.md`.
+- `git status --short --branch` reported `## main...origin/main [ahead 2]` with modified `.codex/plans/current.md`.
+- Handoff evidence matched local commits `7044150 Record M6-S1 cycle commit` and `bfa16fb Add artifact JSON report API`.
+Changed:
+- none
+Next: documentation/state sync
+Blocker: none
+
+Phase: documentation-state-sync
+Result: DOCS SYNCED
+Evidence:
+- `docs/roadmap.md` said `Next eligible slice: M6-S1` and left `M6-S1` as `accepted` after M6-S1 commit `bfa16fb95121361ec3f26740dcb157c46907cbd1`.
+- Updated `docs/roadmap.md` to mark `M6-S1` verified and move the next eligible slice to `M6-S2` before M6-S2 production edits.
+Changed:
+- `docs/roadmap.md`
+Next: discovery
+Blocker: none
+
 Phase: discovery
 Result: DISCOVERY READY
 Evidence:
-- Read `.agents/skills/implementation-cycle/SKILL.md`, `AGENTS.md`, `docs/SPECIFICATION.md`, `docs/roadmap.md`, `.codex/plans/current.md`, `README.md`, `docs/READINESS_CHECKLIST.md`, `docs/SPECIFICATION_GUIDE.md`, `docs/ROADMAP_GUIDE.md`, and `docs/IMPLEMENTATION_CYCLE_GUIDE.md`.
-- `git status --short --branch` reported `## main...origin/main` with pre-existing modified files: `.codex/cycles/history.md`, `.codex/plans/current.md`, `docs/SPECIFICATION.md`, and `docs/roadmap.md`.
-- `docs/roadmap.md` identified `M6-S1` as next eligible accepted slice.
-- `go test ./...` exited `0` before M6-S1 edits: `ok adb-dashboard/tests/cli 145.745s`.
+- Read readiness guidance in `docs/READINESS_CHECKLIST.md`, `docs/SPECIFICATION_GUIDE.md`, and `docs/ROADMAP_GUIDE.md`.
+- `CAP-022` and roadmap slice `M6-S2` are accepted and identify a single HTTP boundary for Markdown report generation.
+- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.891s`.
 Changed:
 - none
 Next: contract
@@ -44,9 +64,8 @@ Blocker: none
 Phase: contract
 Result: CONTRACT READY
 Evidence:
-- `CAP-022` defines `GET /api/v1/artifacts/{artifactId}/report`, default JSON format, `format=json`, read-only report generation from stored artifact metadata and latest ready analysis, and no report-time `adb` or `aapt` execution.
-- `AC-022-001` covers JSON report success with no writes, no host-tool execution, and no sensitive/path disclosure.
-- M6-S1 owns the `AC-022-003` negative paths for invalid artifact ID, invalid format including interim `format=markdown`, unknown artifact ID, no ready analysis, corrupt metadata, and rejected Host or Origin.
+- `AC-022-002` requires `format=markdown` to return HTTP `200` with `Content-Type: text/markdown`, semantic report sections and values, no writes, no host-tool execution, and no host paths, stderr, environment values, or tokens.
+- M6-S2 preserves invalid non-Markdown `format` behavior and security rejection before artifact lookup or report generation.
 - Primary acceptance boundary is HTTP through the running server with isolated artifact storage.
 Changed:
 - none
@@ -56,9 +75,9 @@ Blocker: none
 Phase: red
 Result: RED CONFIRMED
 Evidence:
-- Added `TestM6S1ArtifactReportJSONAPI` to exercise upload, analysis, report success, negative paths, metadata stability, fake-tool log stability, and sensitive output checks through production HTTP routes.
-- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` first failed to compile because test support omitted `strconv`; fixed the test support import.
-- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` then exited `1` with intended boundary failure: default report request returned HTTP `404` with body `{"error":{"code":"artifact_not_found","message":"Artifact not found","details":{},"requestId":null}}` instead of HTTP `200`.
+- Added `TestM6S2ArtifactReportMarkdownAPI` to exercise upload, analysis, Markdown report success, semantic Markdown content, invalid non-Markdown format, rejected Host, rejected Origin, metadata stability, fake `aapt` log stability, and sensitive output checks through production HTTP routes.
+- First test run failed before the intended boundary because the fake `aapt` fixture used non-standard package values for the shared assertion; corrected the test fixture.
+- `go test ./tests/cli -run TestM6S2ArtifactReportMarkdownAPI -count=1` exited `1` with intended boundary failure: Markdown report returned HTTP `400` with body `{"error":{"code":"invalid_report_format","message":"Invalid report format","details":{},"requestId":null}}` instead of HTTP `200`.
 Changed:
 - `tests/cli/m1_s1_cli_test.go`
 Next: build
@@ -67,13 +86,27 @@ Blocker: none
 Phase: build
 Result: BUILD APPLIED
 Evidence:
-- Implemented production route dispatch for `GET /api/v1/artifacts/{artifactId}/report`.
-- Implemented JSON report response with `report.artifact`, `report.analysis`, and ordered `report.sections` derived from stored metadata and stored ready analysis.
-- Implemented M6-S1 format handling: absent `format` and `format=json` succeed; `format=markdown` and other values return `400 invalid_report_format`.
-- Implemented invalid ID `400 invalid_artifact_request`, unknown artifact `404 artifact_not_found`, no ready analysis `409 artifact_report_unavailable`, and corrupt metadata `500 artifact_catalog_unavailable`.
-- Report generation uses existing metadata reads and does not execute host tools or write metadata.
+- Implemented `format=markdown` acceptance in the existing report route.
+- Implemented Markdown response generation from the same stored `artifactReportSections` used by JSON.
+- Implemented `Content-Type: text/markdown` response writing without report-file persistence or host-tool execution.
 Changed:
 - `cmd/adb-dashboard/main.go`
+Next: green
+Blocker: none
+
+Phase: green
+Result: GREEN VERIFIED
+Evidence:
+- `go test ./tests/cli -run 'TestM6S(1ArtifactReportJSONAPI|2ArtifactReportMarkdownAPI)' -count=1` initially exited `1` because the M6-S1 interim Markdown rejection assertion conflicted with M6-S2; updated M6-S1 regression coverage to preserve invalid `format=xml` without rejecting Markdown.
+- `go test ./tests/cli -run 'TestM6S(1ArtifactReportJSONAPI|2ArtifactReportMarkdownAPI)' -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.713s`.
+- Focused process/HTTP test exercised the real M6-S2 path through the running server: upload APK, analyze with fake `aapt`, request `/api/v1/artifacts/{artifactId}/report?format=markdown`, inspect HTTP `200`, `Content-Type: text/markdown`, ordered semantic Markdown content, metadata byte stability, fake `aapt` log stability, invalid `format=xml`, rejected Host, and rejected Origin.
+- `gofmt -w cmd/adb-dashboard/main.go tests/cli/m1_s1_cli_test.go` exited `0`.
+- `git diff --check` exited `0`.
+- Combined broad command `go test ./tests/cli -run 'TestM6S(1ArtifactReportJSONAPI|2ArtifactReportMarkdownAPI)' -count=1 && go test ./... -count=1 && go vet ./... && go build ./cmd/adb-dashboard && git diff --check` exited `0`; focused output was `ok adb-dashboard/tests/cli 0.702s`; full test output was `? adb-dashboard/cmd/adb-dashboard [no test files]` and `ok adb-dashboard/tests/cli 146.288s`.
+- Removed generated local `adb-dashboard` binary with `unlink adb-dashboard`; `git status --short --branch` then showed no untracked build artifact.
+Changed:
+- `cmd/adb-dashboard/main.go`
+- `tests/cli/m1_s1_cli_test.go`
 Next: documentation
 Blocker: none
 
@@ -81,64 +114,33 @@ Phase: documentation
 Result: DOCS SYNCED
 Evidence:
 - Read `.agents/skills/cycle-document/SKILL.md`.
-- Updated `docs/MANUAL_TESTING.md` scope through `M6-S1`.
-- Added manual JSON report API checks for default JSON, `format=json`, read-only metadata behavior, no report-time `adb`/`aapt`, invalid format including interim `format=markdown`, unknown artifact, no ready analysis, corrupt metadata, and Host/Origin rejection.
+- Updated `docs/MANUAL_TESTING.md` scope through `M6-S2`.
+- Added manual Markdown report API checks for `format=markdown`, `Content-Type: text/markdown`, semantic content, local-only note, read-only behavior, and sensitive-output constraints.
+- Updated report negative behavior to keep unsupported formats other than `json` or `markdown` as `400 invalid_report_format`.
+- Advanced `docs/roadmap.md` to mark `M6-S2` verified and `Next eligible slice: M6-S3`.
 Changed:
 - `docs/MANUAL_TESTING.md`
-Next: implementation-ready-for-test
-Blocker: none
-
-Phase: implementation-ready-for-test
-Result: IMPLEMENTATION READY FOR TEST
-Evidence:
-- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.424s`.
-- `git diff --check` exited `0`.
-- `go test ./... -count=1` exited `0`: `? adb-dashboard/cmd/adb-dashboard [no test files]`; `ok adb-dashboard/tests/cli 145.901s`.
-- `go vet ./...` exited `0`.
-- `go build ./cmd/adb-dashboard` exited `0`.
-Changed:
-- `.codex/plans/current.md`
-Next: Test gate focused-green, real-path exercise, negative paths, broad checks.
-Blocker: none
-
-Phase: green
-Result: GREEN VERIFIED
-Evidence:
-- `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.344s`.
-- Focused process/HTTP test exercised the real M6-S1 path through the running server: upload APK, analyze with fake `aapt`, request `/api/v1/artifacts/{artifactId}/report` and `?format=json`, inspect JSON report body and content type, prove metadata bytes and fake-tool marker stayed unchanged after report requests, and repeat invalid ID, unknown artifact, no ready analysis, invalid `format`, interim `format=markdown`, rejected Host, rejected Origin, and corrupt metadata cases.
-- `go vet ./...` exited `0`.
-- `go build ./cmd/adb-dashboard` exited `0`; removed the generated local `adb-dashboard` binary after verification.
-- `git diff --check` exited `0`.
-- First `go test ./... -count=1` exited `1` after `TestM3S1BrowserRefreshAndDeviceDetailView/refreshes_and_opens_detail_without_sensitive_or_unsupported_output` observed fake ADB invocation log `version\nversion\ndevices -l\nversion\nversion\ndevices -l\ndevices -l\n`, expected `version\nversion\ndevices -l\nversion\ndevices -l\nversion\ndevices -l\n`; failure was outside M6-S1 report behavior.
-- `go test ./tests/cli -run TestM3S1BrowserRefreshAndDeviceDetailView -count=1` exited `0`: `ok adb-dashboard/tests/cli 8.476s`.
-- Retry `go test ./... -count=1` exited `0`: `? adb-dashboard/cmd/adb-dashboard [no test files]`; `ok adb-dashboard/tests/cli 146.535s`.
-Changed:
-- `.codex/plans/current.md`
-Next: Review gate diff-review, evidence-review, docs-review.
+- `docs/roadmap.md`
+Next: review
 Blocker: none
 
 Phase: review
 Result: REVIEW PASSED
 Evidence:
-- `AC-022-001` is traced to the production `GET /api/v1/artifacts/{artifactId}/report` route, JSON report assembly from stored metadata and stored ready analysis, focused HTTP assertions for absent `format` and `format=json`, content type, top-level `report`, ordered sections, metadata byte stability, fake `aapt` log stability, and sensitive/path omission checks.
-- `AC-022-003` M6-S1 subset is traced to focused HTTP assertions for invalid ID `400 invalid_artifact_request`, invalid `format` and interim `format=markdown` as `400 invalid_report_format`, unknown artifact `404 artifact_not_found`, no ready analysis `409 artifact_report_unavailable`, corrupt metadata `500 artifact_catalog_unavailable`, rejected Host `403 forbidden_host`, and rejected Origin `403 forbidden_origin`.
-- Review rerun `go test ./tests/cli -run TestM6S1ArtifactReportJSONAPI -count=1` exited `0`: `ok adb-dashboard/tests/cli 0.375s`.
-- Review rerun `go vet ./...` exited `0`.
-- Review rerun `go build ./cmd/adb-dashboard` exited `0`; removed generated local `adb-dashboard` binary.
-- Review rerun `go test ./... -count=1` exited `0`: `? adb-dashboard/cmd/adb-dashboard [no test files]`; `ok adb-dashboard/tests/cli 146.719s`.
-- `git diff --check` exited `0`.
-- Diff review found the M6-S1 production change limited to report route dispatch and read-only report generation; focused tests cover the production HTTP boundary; manual testing docs are synchronized; no placeholders, fabricated success paths, test-only production hooks, new dependencies, external network calls, ADB/device mutation, `aapt` execution during report generation, report-file writes, or unrelated production refactors were found.
-- Pre-existing uncommitted M6 specification, roadmap, cycle history, and active-plan edits remain present as recorded in discovery; they are governing/pre-existing context and were not treated as M6-S1 production changes.
+- Read `.agents/skills/cycle-review/SKILL.md`.
+- `AC-022-002` is traced to production `format=markdown` handling in `GET /api/v1/artifacts/{artifactId}/report`, Markdown rendering from stored report sections, and focused HTTP assertions for status, content type, ordered semantic content, read-only metadata, fake `aapt` log stability, and sensitive/path omission.
+- M6-S2 preservation of `AC-022-003` is traced to focused HTTP assertions for invalid `format=xml`, rejected Host `403 forbidden_host`, and rejected Origin `403 forbidden_origin`.
+- Diff review found the production change limited to Markdown format handling and response writing in the existing report route; no new dependencies, test-only production hooks, placeholder success paths, report-file writes, external calls, ADB/device mutation, or report-time `aapt` execution were found.
+- `rg -n "TODO|panic\\(|format=markdown.*invalid|Markdown success is not implemented|invalid_report_format" cmd/adb-dashboard/main.go tests/cli/m1_s1_cli_test.go docs/MANUAL_TESTING.md docs/roadmap.md` exited `0`; remaining `format=markdown` invalid wording is historical M6-S1/M6-S2 roadmap red-evidence text, not current behavior docs.
 Changed:
 - `.codex/plans/current.md`
-- `.codex/cycles/history.md`
 Next: ready
 Blocker: none
 
 Phase: ready
 Result: CYCLE READY
 Evidence:
-- M6-S1 passed review with focused process/HTTP, negative-path, read-only filesystem/tool-log, documentation, and broad-check evidence.
+- M6-S2 passed review with focused process/HTTP, negative-format/security, read-only filesystem/tool-log, documentation, and broad-check evidence.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
@@ -148,7 +150,7 @@ Blocker: none
 Phase: committed
 Result: COMMITTED
 Evidence:
-- `git commit -m "Add artifact JSON report API"` created commit `bfa16fb95121361ec3f26740dcb157c46907cbd1`.
+- `git commit -m "Add artifact Markdown report API"` created commit `2ffc4db4708b6d73080a7d23787b0991eb0b1846`.
 Changed:
 - `.codex/plans/current.md`
 - `.codex/cycles/history.md`
