@@ -3,13 +3,13 @@
 ## Scope
 
 These steps exercise the current implementation level through
-`M6-S2`: local CLI behavior, configuration and startup checks, loopback server
+`M6-S3`: local CLI behavior, configuration and startup checks, loopback server
 lifecycle, browser bootstrap/status, ADB discovery, device inventory, device
 detail, bounded read-only logcat, read-only PNG screenshot capture, and
 read-only package inventory API/browser behavior plus package detail API
 behavior and local APK artifact upload, catalog, detail, analysis API, and
 browser analysis and deletion behavior, plus local artifact JSON and Markdown
-report API behavior.
+report API behavior and browser artifact report view/export behavior.
 
 ## Requirements
 
@@ -997,6 +997,41 @@ Expected result:
   `artifact_catalog_unavailable`.
 - Rejected Host or Origin requests return HTTP `403` before artifact lookup or
   report generation.
+
+## Browser Artifact Report View And Export
+
+Open the dashboard in a browser after uploading and analyzing an artifact:
+
+```text
+http://$ADDR/
+```
+
+Use the artifact controls to refresh the artifact catalog, open the analyzed
+artifact report, and export Markdown.
+
+Expected result:
+
+- The report view is unavailable until a selected artifact has ready analysis.
+- For a ready artifact, the report view shows artifact identity, integrity
+  values, package metadata, warning lines when present, and
+  `Generated from local artifact metadata and latest ready analysis only.`.
+- The visible report state comes from the production JSON report route,
+  `GET /api/v1/artifacts/$ARTIFACT_ID/report`.
+- The Markdown export action requests the production Markdown report route,
+  `GET /api/v1/artifacts/$ARTIFACT_ID/report?format=markdown`, and reports
+  export success or failure visibly.
+- Refreshing artifact state, retrying analysis, report API failure, switching
+  artifacts, or deleting the selected artifact clears stale report content or
+  returns the report view to unavailable state.
+- Browser report behavior does not create retained report files under
+  `$DATA_DIR/artifacts`.
+- The browser does not expose report editing, retained report library, compare
+  reports, report deletion, signing verification, malware analysis, install,
+  uninstall, shell, file-transfer, device mutation, external-service, WebSocket,
+  or background-job controls for report behavior.
+- Browser-visible report and export state does not expose token values, host
+  filesystem paths, `original.apk`, `metadata.json`, command stderr, or
+  environment values.
 
 ## Artifact Deletion API
 

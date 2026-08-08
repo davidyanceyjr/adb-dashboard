@@ -7,7 +7,7 @@
 - Specification source: `docs/SPECIFICATION.md`
 - Specification version: 1.4.0
 - Current milestone: M6
-- Next eligible slice: M6-S3
+- Next eligible slice: none
 - Last reviewed: 2026-08-06
 
 This roadmap selects implementation order for the accepted local bootstrap,
@@ -1607,7 +1607,7 @@ Every implementation slice must:
 
 ### Slice M6-S3: Browser Artifact Report View And Export
 
-- Status: accepted
+- Status: verified
 - Mode: feature
 - Purpose: Make local artifact reports usable from the browser for analyzed
   artifacts, including explicit Markdown export and stale-state clearing.

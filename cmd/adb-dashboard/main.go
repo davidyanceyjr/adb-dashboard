@@ -2616,6 +2616,7 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 
 func writeMarkdown(writer http.ResponseWriter, body string) {
 	writer.Header().Set("Content-Type", "text/markdown")
+	writer.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	writer.WriteHeader(http.StatusOK)
 	_, _ = writer.Write([]byte(body))
 }
@@ -2735,7 +2736,7 @@ const dashboardShellHTML = `<!doctype html>
       <dt>sessions</dt><dd id="sessions-status">sessions: unavailable</dd>
       <dt>storage</dt><dd id="storage-status">storage: unavailable</dd>
       <dt>host tools</dt><dd id="host-tools-status">host tools: unavailable</dd>
-      <dt>artifacts</dt><dd><span id="artifacts-status">artifacts: unavailable</span><div class="controls"><input type="file" id="artifact-upload-input" accept=".apk,application/vnd.android.package-archive"><button type="button" id="artifact-upload-submit">upload</button><button type="button" id="artifact-refresh">refresh</button><button type="button" id="artifact-detail-first">details</button><button type="button" id="artifact-analyze-first">analyze</button><button type="button" id="artifact-delete-first">delete</button></div><div id="artifact-upload-status" class="device-detail">upload: unavailable</div><div id="artifact-analysis-status" class="device-detail">analysis: unavailable</div><div id="artifact-delete-status" class="device-detail">delete: unavailable</div><div id="artifacts-list" class="artifact-list"></div><div id="artifact-detail" class="device-detail">artifact detail: unavailable</div></dd>
+      <dt>artifacts</dt><dd><span id="artifacts-status">artifacts: unavailable</span><div class="controls"><input type="file" id="artifact-upload-input" accept=".apk,application/vnd.android.package-archive"><button type="button" id="artifact-upload-submit">upload</button><button type="button" id="artifact-refresh">refresh</button><button type="button" id="artifact-detail-first">details</button><button type="button" id="artifact-analyze-first">analyze</button><button type="button" id="artifact-report-first">report</button><button type="button" id="artifact-report-export">export markdown</button><button type="button" id="artifact-delete-first">delete</button></div><div id="artifact-upload-status" class="device-detail">upload: unavailable</div><div id="artifact-analysis-status" class="device-detail">analysis: unavailable</div><div id="artifact-report-export-status" class="device-detail">report export: unavailable</div><div id="artifact-delete-status" class="device-detail">delete: unavailable</div><div id="artifacts-list" class="artifact-list"></div><div id="artifact-detail" class="device-detail">artifact detail: unavailable</div><div id="artifact-report" class="device-detail">artifact report: unavailable</div></dd>
     </dl>
   </main>
   <script>
@@ -2764,6 +2765,7 @@ const dashboardShellHTML = `<!doctype html>
   let packageSequence = 0;
   let packageDetailSequence = 0;
   let artifactSequence = 0;
+  let artifactReportSequence = 0;
 
   const packageDetailButtonID = (packageName) => {
     return "package-detail-" + String(packageName || "");
@@ -2806,6 +2808,12 @@ const dashboardShellHTML = `<!doctype html>
     setText("artifacts-list", "");
   };
 
+  const clearArtifactReport = () => {
+    artifactReportSequence++;
+    setText("artifact-report", "artifact report: unavailable");
+    setText("artifact-report-export-status", "report export: unavailable");
+  };
+
   const renderArtifactRows = (items) => {
     latestArtifacts = items;
     const target = document.getElementById("artifacts-list");
@@ -2826,6 +2834,8 @@ const dashboardShellHTML = `<!doctype html>
     setText("artifacts-status", "artifacts: unavailable");
     clearArtifactRows();
     setText("artifact-detail", "artifact detail: unavailable");
+    setText("artifact-analysis-status", "analysis: unavailable");
+    clearArtifactReport();
     setText("artifact-delete-status", "delete: unavailable");
   };
 
@@ -2868,6 +2878,21 @@ const dashboardShellHTML = `<!doctype html>
     setText("artifact-detail", lines.join("\n"));
   };
 
+  const renderArtifactReport = (report) => {
+    const artifact = report.artifact || {};
+    const lines = [
+      "artifact report: " + String(artifact.originalName || ""),
+    ];
+    const sections = Array.isArray(report.sections) ? report.sections : [];
+    for (const section of sections) {
+      const items = Array.isArray(section.items) ? section.items : [];
+      for (const item of items) {
+        lines.push(String(item.label || "") + ": " + String(item.value || ""));
+      }
+    }
+    setText("artifact-report", lines.join("\n"));
+  };
+
   const loadArtifacts = async () => {
     const sequence = ++artifactSequence;
     try {
@@ -2884,6 +2909,7 @@ const dashboardShellHTML = `<!doctype html>
       setText("artifacts-status", "artifacts: " + String(items.length));
       setText("artifact-detail", "artifact detail: unavailable");
       setText("artifact-analysis-status", "analysis: unavailable");
+      clearArtifactReport();
       if (items.length === 0) {
         clearArtifactRows();
         setText("artifacts-list", "empty");
@@ -2943,6 +2969,58 @@ const dashboardShellHTML = `<!doctype html>
     }
   };
 
+  const loadFirstArtifactReport = async () => {
+    const artifact = latestArtifacts[0];
+    if (!artifact || !artifact.id) {
+      clearArtifactReport();
+      return;
+    }
+    const selectedID = String(artifact.id || "");
+    const sequence = ++artifactReportSequence;
+    setText("artifact-report", "artifact report: loading");
+    setText("artifact-report-export-status", "report export: unavailable");
+    try {
+      const reportResponse = await fetch("/api/v1/artifacts/" + encodeURIComponent(selectedID) + "/report", { credentials: "same-origin" });
+      if (!reportResponse.ok) {
+        throw new Error("artifact report unavailable");
+      }
+      const payload = await reportResponse.json();
+      const currentArtifact = latestArtifacts[0];
+      if (sequence !== artifactReportSequence || !currentArtifact || String(currentArtifact.id || "") !== selectedID) {
+        return;
+      }
+      renderArtifactReport(payload.report || {});
+    } catch (_) {
+      if (sequence === artifactReportSequence) {
+        clearArtifactReport();
+      }
+    }
+  };
+
+  const exportFirstArtifactReport = async () => {
+    const artifact = latestArtifacts[0];
+    if (!artifact || !artifact.id) {
+      setText("artifact-report-export-status", "report export: unavailable");
+      return;
+    }
+    const selectedID = String(artifact.id || "");
+    setText("artifact-report-export-status", "report export: loading");
+    try {
+      const response = await fetch("/api/v1/artifacts/" + encodeURIComponent(selectedID) + "/report?format=markdown", { credentials: "same-origin" });
+      if (!response.ok) {
+        throw new Error("artifact report export unavailable");
+      }
+      const currentArtifact = latestArtifacts[0];
+      if (!currentArtifact || String(currentArtifact.id || "") !== selectedID) {
+        setText("artifact-report-export-status", "report export: unavailable");
+        return;
+      }
+      setText("artifact-report-export-status", "report export: ready");
+    } catch (_) {
+      setText("artifact-report-export-status", "report export: unavailable");
+    }
+  };
+
   const analyzeFirstArtifact = async () => {
     const artifact = latestArtifacts[0];
     if (!artifact || !artifact.id) {
@@ -2950,6 +3028,7 @@ const dashboardShellHTML = `<!doctype html>
       return;
     }
     setText("artifact-analysis-status", "analysis: loading");
+    clearArtifactReport();
     try {
       const response = await fetch("/api/v1/artifacts/" + encodeURIComponent(artifact.id) + "/analyze", {
         method: "POST",
@@ -2964,8 +3043,10 @@ const dashboardShellHTML = `<!doctype html>
       renderArtifactRows(latestArtifacts);
       renderArtifactDetail(analyzedArtifact, payload.analysis || null);
       setText("artifact-analysis-status", "analysis: " + String(analyzedArtifact.analysisStatus || "ready"));
+      await loadFirstArtifactReport();
     } catch (_) {
       setText("artifact-analysis-status", "analysis: unavailable");
+      clearArtifactReport();
     }
   };
 
@@ -2989,6 +3070,7 @@ const dashboardShellHTML = `<!doctype html>
       setText("artifact-upload-status", "upload: unavailable");
       setText("artifact-detail", "artifact detail: unavailable");
       setText("artifact-analysis-status", "analysis: unavailable");
+      clearArtifactReport();
       await loadArtifacts();
     } catch (_) {
       setText("artifact-delete-status", "delete: unavailable");
@@ -3050,6 +3132,7 @@ const dashboardShellHTML = `<!doctype html>
     setText("host-tools-status", "host tools: unavailable");
     setText("artifact-upload-status", "upload: unavailable");
     setText("artifact-analysis-status", "analysis: unavailable");
+    clearArtifactReport();
     setText("artifact-delete-status", "delete: unavailable");
     artifactsUnavailable();
   };
@@ -3372,6 +3455,14 @@ const dashboardShellHTML = `<!doctype html>
     const artifactAnalyze = document.getElementById("artifact-analyze-first");
     if (artifactAnalyze) {
       artifactAnalyze.addEventListener("click", analyzeFirstArtifact);
+    }
+    const artifactReport = document.getElementById("artifact-report-first");
+    if (artifactReport) {
+      artifactReport.addEventListener("click", loadFirstArtifactReport);
+    }
+    const artifactReportExport = document.getElementById("artifact-report-export");
+    if (artifactReportExport) {
+      artifactReportExport.addEventListener("click", exportFirstArtifactReport);
     }
     const artifactDelete = document.getElementById("artifact-delete-first");
     if (artifactDelete) {

@@ -4227,6 +4227,150 @@ printf "WARNING: duplicate resource\n"
 	assertPathAbsent(t, values["BROWSER_MARKER"])
 }
 
+func TestM6S3BrowserArtifactReportViewAndExport(t *testing.T) {
+	binary := buildDashboard(t)
+	env := isolatedEnv(t)
+	values := envMap(env)
+	dataDir := filepath.Join(values["XDG_STATE_HOME"], "adb-dashboard")
+	aaptMarker := filepath.Join(values["TMPDIR"], "browser-report-aapt-invoked")
+	env = append(env, "AAPT_MARKER="+aaptMarker)
+	writeFakeAAPT(t, env, `#!/bin/sh
+printf '%s\n' "$*" >> "$AAPT_MARKER"
+if [ "$1" != "dump" ] || [ "$2" != "badging" ]; then
+  printf 'unexpected argv\n' >&2
+  exit 7
+fi
+printf "package: name='com.example.report' versionCode='42' versionName='1.2.3'\n"
+printf "sdkVersion:'23'\n"
+printf "targetSdkVersion:'35'\n"
+printf "application-label:'Example App'\n"
+printf "launchable-activity: name='com.example.report.MainActivity'\n"
+printf "WARNING: duplicate resource\n"
+`)
+
+	server := startDashboard(t, binary, env, "serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir, "--no-open")
+	defer server.cleanup(t)
+	addr := serverAddressFromStartLine(t, server.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	baseURL := "http://" + addr
+	_, _, body := httpGet(t, baseURL+"/")
+	html := string(body)
+	assertM6S3BrowserShellOmitsUnsupportedReportControls(t, html)
+	script := extractInlineScript(t, html)
+
+	rendered := runFrontendScriptWithActions(t, script, baseURL, []frontendAction{
+		{
+			uploadInputID:  "artifact-upload-input",
+			uploadButtonID: "artifact-upload-submit",
+			fileName:       "browser-report.apk",
+			contentType:    "application/vnd.android.package-archive",
+			content:        apkLikeZip(t),
+			afterMS:        350,
+		},
+		{id: "artifact-analyze-first", afterMS: 2500},
+		{id: "artifact-report-first", afterMS: 3800},
+		{id: "artifact-report-export", afterMS: 5600, settleMS: 4000},
+	})
+	wantBeforeDelete := []string{
+		"artifact-report=artifact report: browser-report.apk",
+		"original name: browser-report.apk",
+		"package name: com.example.report",
+		"version name: 1.2.3",
+		"version code: 42",
+		"min SDK: 23",
+		"target SDK: 35",
+		"application label: Example App",
+		"launchable activity: com.example.report.MainActivity",
+		"warning: WARNING: duplicate resource",
+		"scope: Generated from local artifact metadata and latest ready analysis only.",
+		"artifact-report-export-status=report export: ready",
+		"__fetches=/api/v1/bootstrap",
+		"/api/v1/artifacts/",
+		"/report?format=markdown",
+	}
+	for _, want := range wantBeforeDelete {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("browser report shell missing %q\nrendered:\n%s", want, rendered)
+		}
+	}
+	cleared := runFrontendScriptWithActions(t, script, baseURL, []frontendAction{
+		{id: "artifact-report-first", afterMS: 1800},
+		{id: "artifact-delete-first", afterMS: 2800},
+	})
+	for _, want := range []string{
+		"artifact-delete-status=delete: deleted",
+		"artifacts-status=artifacts: 0",
+		"artifacts-list=empty",
+		"artifact-report=artifact report: unavailable",
+		"artifact-report-export-status=report export: unavailable",
+	} {
+		if !strings.Contains(cleared, want) {
+			t.Fatalf("browser report stale-state clearing missing %q\nrendered:\n%s", want, cleared)
+		}
+	}
+	for _, forbidden := range []string{"browser-report.apk", "package name: com.example.report"} {
+		if strings.Contains(cleared, forbidden) {
+			t.Fatalf("browser report stale-state clearing retained %q:\n%s", forbidden, cleared)
+		}
+	}
+	for _, forbidden := range []string{
+		values["HOME"],
+		dataDir,
+		"original.apk",
+		"metadata.json",
+		"report file",
+		"retained report",
+		"install artifact",
+		"install apk",
+		"shell",
+		"file-transfer",
+		"external-service",
+		"token=secret",
+		"unexpected argv",
+	} {
+		if forbidden != "" && strings.Contains(rendered, forbidden) {
+			t.Fatalf("browser report rendered stale, unsupported, or sensitive text %q:\n%s", forbidden, rendered)
+		}
+	}
+	assertFileContains(t, aaptMarker, "dump badging "+filepath.Join(dataDir, "artifacts", latestArtifactIDFromFetches(t, rendered), "original.apk")+"\n")
+	assertNoRetainedReportFiles(t, dataDir)
+	assertPathAbsent(t, values["BROWSER_MARKER"])
+
+	pendingEnv := isolatedEnv(t)
+	pendingValues := envMap(pendingEnv)
+	pendingDataDir := filepath.Join(pendingValues["XDG_STATE_HOME"], "adb-dashboard")
+	pendingServer := startDashboard(t, binary, pendingEnv, "serve", "--listen", "127.0.0.1:0", "--data-dir", pendingDataDir, "--no-open")
+	defer pendingServer.cleanup(t)
+	pendingAddr := serverAddressFromStartLine(t, pendingServer.waitForStderrLine(t, regexp.MustCompile(`^\S+ INFO server started addr=127\.0\.0\.1:\d+$`)))
+	pendingBaseURL := "http://" + pendingAddr
+	_, _, pendingBody := httpGet(t, pendingBaseURL+"/")
+	pendingRendered := runFrontendScriptWithActions(t, extractInlineScript(t, string(pendingBody)), pendingBaseURL, []frontendAction{
+		{
+			uploadInputID:  "artifact-upload-input",
+			uploadButtonID: "artifact-upload-submit",
+			fileName:       "pending-report.apk",
+			contentType:    "application/vnd.android.package-archive",
+			content:        apkLikeZip(t),
+			afterMS:        350,
+		},
+		{id: "artifact-report-first", afterMS: 1800},
+		{id: "artifact-report-export", afterMS: 2600},
+	})
+	for _, want := range []string{
+		"artifact-report=artifact report: unavailable",
+		"artifact-report-export-status=report export: unavailable",
+	} {
+		if !strings.Contains(pendingRendered, want) {
+			t.Fatalf("pending report unavailable state missing %q\nrendered:\n%s", want, pendingRendered)
+		}
+	}
+	for _, forbidden := range []string{"package name: com.example.report", "scope: Generated from local artifact metadata", pendingValues["HOME"], pendingDataDir, "original.apk", "metadata.json"} {
+		if forbidden != "" && strings.Contains(pendingRendered, forbidden) {
+			t.Fatalf("pending report rendered false content or sensitive text %q:\n%s", forbidden, pendingRendered)
+		}
+	}
+	assertNoRetainedReportFiles(t, pendingDataDir)
+}
+
 func TestM5S4BrowserArtifactUploadAndCatalog(t *testing.T) {
 	binary := buildDashboard(t)
 
@@ -5108,8 +5252,10 @@ global.document = {
   },
 };
 const realFetch = global.fetch;
+const fetches = [];
 global.fetch = async (target, options = {}) => {
   const url = new URL(target, baseURL);
+  fetches.push(url.pathname + url.search);
   if (failStatus && url.pathname === "/api/v1/status") {
     return { ok: false, status: 503, json: async () => ({}) };
   }
@@ -5126,6 +5272,7 @@ global.fetch = async (target, options = {}) => {
 };
 %s
 setTimeout(() => {
+  console.log("__fetches=" + fetches.join("|"));
   for (const key of Object.keys(elements).sort()) {
     console.log(key + "=" + elements[key].textContent);
   }
@@ -5156,6 +5303,7 @@ type frontendAction struct {
 	contentType    string
 	content        []byte
 	afterMS        int
+	settleMS       int
 }
 
 func runFrontendScriptWithActions(t *testing.T, script, baseURL string, actions []frontendAction) string {
@@ -5173,8 +5321,12 @@ func runFrontendScriptWithActions(t *testing.T, script, baseURL string, actions 
 		if delay == 0 {
 			delay = 200 + index*200
 		}
-		if delay+1000 > logDelay {
-			logDelay = delay + 1000
+		settle := action.settleMS
+		if settle == 0 {
+			settle = 1000
+		}
+		if delay+settle > logDelay {
+			logDelay = delay + settle
 		}
 		switch {
 		case action.id != "":
@@ -5270,8 +5422,10 @@ global.document = {
   },
 };
 const realFetch = global.fetch;
+const fetches = [];
 global.fetch = async (target, options = {}) => {
   const url = new URL(target, baseURL);
+  fetches.push(url.pathname + url.search);
   return realFetch(url.href, {
     ...options,
     headers: {
@@ -5283,6 +5437,7 @@ global.fetch = async (target, options = {}) => {
 %s
 %s
 setTimeout(() => {
+  console.log("__fetches=" + fetches.join("|"));
   for (const key of Object.keys(elements).sort()) {
     console.log(key + "=" + elements[key].textContent);
     if (elements[key].src) {
@@ -5522,6 +5677,62 @@ func assertM5S6BrowserShellOmitsUnsupportedArtifactControls(t *testing.T, text s
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("browser shell contains unsupported or sensitive text %q:\n%s", forbidden, text)
 		}
+	}
+}
+
+func assertM6S3BrowserShellOmitsUnsupportedReportControls(t *testing.T, text string) {
+	t.Helper()
+
+	assertM5S6BrowserShellOmitsUnsupportedArtifactControls(t, text)
+	for _, forbidden := range []string{
+		"retained report",
+		"report library",
+		"compare reports",
+		"signing verification",
+		"malware analysis",
+		"external-service",
+		"background job",
+		"report delete",
+	} {
+		if strings.Contains(strings.ToLower(text), strings.ToLower(forbidden)) {
+			t.Fatalf("browser report shell contains unsupported text %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func latestArtifactIDFromFetches(t *testing.T, rendered string) string {
+	t.Helper()
+
+	matches := regexp.MustCompile(`/api/v1/artifacts/([A-Za-z0-9_-]+)/`).FindAllStringSubmatch(rendered, -1)
+	if len(matches) == 0 {
+		t.Fatalf("rendered output did not include an artifact-specific fetch:\n%s", rendered)
+	}
+	return matches[len(matches)-1][1]
+}
+
+func assertNoRetainedReportFiles(t *testing.T, dataDir string) {
+	t.Helper()
+
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		return
+	} else if err != nil {
+		t.Fatalf("stat data dir %s: %v", dataDir, err)
+	}
+	err := filepath.WalkDir(dataDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		name := strings.ToLower(entry.Name())
+		if strings.Contains(name, "report") {
+			return fmt.Errorf("retained report file exists: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
