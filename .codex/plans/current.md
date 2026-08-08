@@ -1,6 +1,14 @@
 # Active Cycle
 
-Status: active
+Status: inactive
+Last cycle ID: CYCLE-20260808-M6-S3
+Last mode: feature
+Last roadmap slice: M6-S3: Browser Artifact Report View And Export
+Last result: committed
+Last final phase: committed
+Last commit: `867e283e9783a220038d132e82898548ef6b0035`
+Next eligible slice: none
+
 Cycle ID: CYCLE-20260808-M6-S3
 Mode: feature
 Goal: Implement the M6-S3 browser artifact report view and Markdown export.
@@ -15,9 +23,9 @@ Focused test command: `go test ./tests/cli -run TestM6S3BrowserArtifactReportVie
 Real-path command or procedure: Focused browser script test starts the built server with isolated storage and fake `aapt`, uploads and analyzes a disposable APK through production routes, opens the served shell, opens the artifact report, triggers Markdown export, inspects visible report fields/export status, deletes or switches artifacts, inspects stale-state clearing and unavailable/failure states, and inspects absence of retained report files.
 Broad verification commands: `go test ./... -count=1`; `go vet ./...`; `go build ./cmd/adb-dashboard`; `git diff --check`
 Current gate: Review
-Current phase: ready
+Current phase: committed
 Blocker: none
-Next phase: commit
+Next phase: none
 
 ## Phase Results
 
@@ -139,4 +147,14 @@ Evidence:
 Changed:
 - `.codex/plans/current.md`
 Next: commit
+Blocker: none
+
+Phase: committed
+Result: COMMITTED
+Evidence:
+- `git commit -m "Add browser artifact report view"` created commit `867e283e9783a220038d132e82898548ef6b0035`.
+Changed:
+- `.codex/plans/current.md`
+- `.codex/cycles/history.md`
+Next: none
 Blocker: none
